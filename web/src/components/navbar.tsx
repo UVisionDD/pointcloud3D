@@ -1,8 +1,12 @@
 import Link from "next/link";
-import { SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
 import { Button } from "@/components/ui/button";
 
-export function NavBar() {
+export async function NavBar() {
+  const { userId } = await auth();
+  const signedIn = Boolean(userId);
+
   return (
     <header className="border-b">
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
@@ -19,24 +23,27 @@ export function NavBar() {
           >
             Pricing
           </Link>
-          <SignedOut>
-            <Link href="/sign-in">
-              <Button variant="ghost" size="sm">
-                Sign in
-              </Button>
-            </Link>
-            <Link href="/sign-up">
-              <Button size="sm">Get started</Button>
-            </Link>
-          </SignedOut>
-          <SignedIn>
-            <Link href="/dashboard">
-              <Button size="sm" variant="outline">
-                Dashboard
-              </Button>
-            </Link>
-            <UserButton afterSignOutUrl="/" />
-          </SignedIn>
+          {signedIn ? (
+            <>
+              <Link href="/dashboard">
+                <Button size="sm" variant="outline">
+                  Dashboard
+                </Button>
+              </Link>
+              <UserButton />
+            </>
+          ) : (
+            <>
+              <Link href="/sign-in">
+                <Button variant="ghost" size="sm">
+                  Sign in
+                </Button>
+              </Link>
+              <Link href="/sign-up">
+                <Button size="sm">Get started</Button>
+              </Link>
+            </>
+          )}
         </div>
       </nav>
     </header>

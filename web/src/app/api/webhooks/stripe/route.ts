@@ -19,11 +19,9 @@ export async function POST(req: Request) {
 
   let event: Stripe.Event;
   try {
-    event = stripe().webhooks.constructEvent(
-      body,
-      sig,
-      serverEnv().STRIPE_WEBHOOK_SECRET,
-    );
+    const secret = serverEnv().STRIPE_WEBHOOK_SECRET;
+    if (!secret) return NextResponse.json({ error: "webhook_not_configured" }, { status: 500 });
+    event = stripe().webhooks.constructEvent(body, sig, secret);
   } catch (e) {
     return NextResponse.json({ error: `bad_signature: ${e}` }, { status: 400 });
   }
@@ -81,11 +79,17 @@ export async function POST(req: Request) {
     case "customer.subscription.created":
     case "customer.subscription.updated": {
       const sub = event.data.object;
-      const priceId = sub.items.data[0]?.price.id;
+      const item = sub.items.data[0];
+      const priceId = item?.price.id;
       const meta = sub.metadata ?? {};
       const userId = meta.clerkUserId;
       const plan = priceId ? planForPrice(priceId) : null;
-      if (!userId || !priceId || !plan || plan.plan === "payg") break;
+      if (!userId || !priceId || !plan || plan.plan === "payg" || !item) break;
+
+      // Stripe moved period dates onto subscription items in recent API
+      // versions; the subscription-level fields are no longer in the TS types.
+      const periodStart = new Date(item.current_period_start * 1000);
+      const periodEnd = new Date(item.current_period_end * 1000);
 
       await db
         .insert(schema.subscriptions)
@@ -97,8 +101,8 @@ export async function POST(req: Request) {
           status: sub.status,
           monthlyExports: plan.monthlyExports,
           cancelAtPeriodEnd: sub.cancel_at_period_end,
-          currentPeriodStart: new Date(sub.current_period_start * 1000),
-          currentPeriodEnd: new Date(sub.current_period_end * 1000),
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: periodEnd,
         })
         .onConflictDoUpdate({
           target: schema.subscriptions.id,
@@ -108,8 +112,8 @@ export async function POST(req: Request) {
             plan: plan.plan,
             monthlyExports: plan.monthlyExports,
             cancelAtPeriodEnd: sub.cancel_at_period_end,
-            currentPeriodStart: new Date(sub.current_period_start * 1000),
-            currentPeriodEnd: new Date(sub.current_period_end * 1000),
+            currentPeriodStart: periodStart,
+            currentPeriodEnd: periodEnd,
             updatedAt: new Date(),
           },
         });
@@ -127,7 +131,7 @@ export async function POST(req: Request) {
 
     case "invoice.paid": {
       const inv = event.data.object;
-      const subId = inv.subscription;
+      const subId = inv.parent?.subscription_details?.subscription;
       if (typeof subId === "string") {
         // Reset monthly usage counter on each paid invoice.
         await db

@@ -52,7 +52,7 @@ function Num({
         min={min}
         max={max}
         step={step}
-        onValueChange={(v) => onChange(v[0])}
+        onValueChange={(v) => onChange(Array.isArray(v) ? v[0] : v)}
       />
       {hint ? <p className="text-[10px] text-muted-foreground">{hint}</p> : null}
     </div>

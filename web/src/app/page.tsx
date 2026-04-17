@@ -1,11 +1,13 @@
 import Link from "next/link";
-import { SignedIn, SignedOut } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
 
 import { NavBar } from "@/components/navbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const { userId } = await auth();
+  const signedIn = Boolean(userId);
   return (
     <>
       <NavBar />
@@ -20,26 +22,29 @@ export default function LandingPage() {
             same photo for 30 days.
           </p>
           <div className="mt-8 flex items-center justify-center gap-3">
-            <SignedOut>
-              <Link href="/sign-up">
-                <Button size="lg">Start for free</Button>
-              </Link>
-              <Link href="/pricing">
-                <Button size="lg" variant="outline">
-                  See pricing
-                </Button>
-              </Link>
-            </SignedOut>
-            <SignedIn>
-              <Link href="/dashboard/upload">
-                <Button size="lg">Upload a photo</Button>
-              </Link>
-              <Link href="/dashboard">
-                <Button size="lg" variant="outline">
-                  My jobs
-                </Button>
-              </Link>
-            </SignedIn>
+            {signedIn ? (
+              <>
+                <Link href="/dashboard/upload">
+                  <Button size="lg">Upload a photo</Button>
+                </Link>
+                <Link href="/dashboard">
+                  <Button size="lg" variant="outline">
+                    My jobs
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link href="/sign-up">
+                  <Button size="lg">Start for free</Button>
+                </Link>
+                <Link href="/pricing">
+                  <Button size="lg" variant="outline">
+                    See pricing
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
         </section>
 

@@ -21,8 +21,10 @@ const serverSchema = z.object({
   R2_PUBLIC_URL: z.string().url().optional(),
 
   // Stripe
-  STRIPE_SECRET_KEY: z.string().min(1),
-  STRIPE_WEBHOOK_SECRET: z.string().min(1),
+  // Optional so the app can build without Stripe wired up yet. Runtime
+  // checkout/webhook routes will throw if these are missing when invoked.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PRICE_PAYG_SINGLE: z.string().optional(),
   STRIPE_PRICE_PAYG_THREE_PACK: z.string().optional(),
   STRIPE_PRICE_SUB_BASIC: z.string().optional(),

@@ -1,12 +1,14 @@
 import Link from "next/link";
-import { SignedIn, SignedOut } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
 
 import { NavBar } from "@/components/navbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CheckoutButton } from "@/components/checkout-button";
 
-export default function PricingPage() {
+export default async function PricingPage() {
+  const { userId } = await auth();
+  const signedIn = Boolean(userId);
   // Price IDs live server-side so the client bundle never sees them.
   const payg = [
     {
@@ -66,14 +68,14 @@ export default function PricingPage() {
           <h2 className="mt-12 text-lg font-semibold">Pay as you go</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             {payg.map((p) => (
-              <PlanCard key={p.name} plan={p} />
+              <PlanCard key={p.name} plan={p} signedIn={signedIn} />
             ))}
           </div>
 
           <h2 className="mt-12 text-lg font-semibold">Subscriptions</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
             {subs.map((p) => (
-              <PlanCard key={p.name} plan={p} />
+              <PlanCard key={p.name} plan={p} signedIn={signedIn} />
             ))}
           </div>
 
@@ -88,6 +90,7 @@ export default function PricingPage() {
 
 function PlanCard({
   plan,
+  signedIn,
 }: {
   plan: {
     name: string;
@@ -97,6 +100,7 @@ function PlanCard({
     mode: "payment" | "subscription";
     featured?: boolean;
   };
+  signedIn: boolean;
 }) {
   return (
     <Card className={plan.featured ? "border-primary" : undefined}>
@@ -113,18 +117,17 @@ function PlanCard({
       <CardContent className="space-y-3">
         <div className="text-3xl font-bold">{plan.price}</div>
         <p className="text-sm text-muted-foreground">{plan.description}</p>
-        <SignedIn>
+        {signedIn ? (
           <CheckoutButton
             priceId={plan.priceId}
             mode={plan.mode}
             label={plan.mode === "subscription" ? "Subscribe" : "Buy"}
           />
-        </SignedIn>
-        <SignedOut>
+        ) : (
           <Link href="/sign-up">
             <Button className="w-full">Get started</Button>
           </Link>
-        </SignedOut>
+        )}
       </CardContent>
     </Card>
   );

@@ -5,11 +5,9 @@ let _stripe: Stripe | undefined;
 
 export function stripe(): Stripe {
   if (!_stripe) {
-    _stripe = new Stripe(serverEnv().STRIPE_SECRET_KEY, {
-      // Pin an API version so behavior doesn't drift under us.
-      apiVersion: "2024-12-18.acacia" as Stripe.LatestApiVersion,
-      typescript: true,
-    });
+    const key = serverEnv().STRIPE_SECRET_KEY;
+    if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+    _stripe = new Stripe(key, { typescript: true });
   }
   return _stripe;
 }
