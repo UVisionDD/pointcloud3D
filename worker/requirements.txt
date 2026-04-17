@@ -1,0 +1,24 @@
+# Core ML / imaging.
+torch==2.11.0
+torchvision==0.26.0
+transformers==5.5.4
+numpy==2.4.4
+pillow==12.2.0
+opencv-python==4.13.0.92
+
+# Point-cloud + export formats.
+trimesh==4.11.5
+ezdxf==1.4.3
+
+# Step-2 optional stages. Unpinned for now; pin after first install on the
+# Mac Mini so everyone runs the same versions.
+mediapipe>=0.10,<0.11          # face detection
+rembg>=2.0,<3.0                # background removal (pulls in onnxruntime)
+
+# Server + queue.
+fastapi>=0.115,<0.119
+uvicorn[standard]>=0.30,<0.40
+python-multipart>=0.0.9        # multipart uploads for FastAPI
+psycopg[binary]>=3.2,<4.0
+boto3>=1.35,<2.0
+python-dotenv>=1.0,<2.0
