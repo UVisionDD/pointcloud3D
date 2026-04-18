@@ -15,59 +15,60 @@ from pointcloud import CrystalParams
 
 CONTENT_PRESETS: dict[str, CrystalParams] = {
     # More face-detail bias, tighter Z range, higher contrast on skin tones.
+    # Target ~1.2M points at 1600px cap.
     "portrait": CrystalParams(
-        base_density=0.38,
+        base_density=0.24,
         max_points_per_pixel=4,
         xy_jitter=0.5,
-        z_layers=3,
+        z_layers=4,
         volumetric_thickness=0.06,
         z_scale=0.75,
         contrast=1.15,
         gamma=0.95,
         depth_gamma=0.85,
     ),
-    # Pets are usually furrier — slightly higher density, softer contrast.
+    # Target ~1.5M — pets are furrier so higher density.
     "pet": CrystalParams(
-        base_density=0.42,
-        max_points_per_pixel=5,
+        base_density=0.28,
+        max_points_per_pixel=4,
         xy_jitter=0.55,
-        z_layers=3,
+        z_layers=4,
         volumetric_thickness=0.08,
         z_scale=0.8,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.9,
     ),
-    # Landscapes need full Z range and lower density to avoid muddiness.
+    # Target ~1.8M — landscapes get full Z range + highest density.
     "landscape": CrystalParams(
-        base_density=0.28,
-        max_points_per_pixel=3,
+        base_density=0.32,
+        max_points_per_pixel=4,
         xy_jitter=0.5,
-        z_layers=4,
+        z_layers=5,
         volumetric_thickness=0.12,
         z_scale=0.95,
         contrast=1.05,
         gamma=1.0,
         depth_gamma=1.0,
     ),
-    # Objects: medium density, medium Z.
+    # Target ~900k — objects usually have dark background, effective lum lower.
     "object": CrystalParams(
-        base_density=0.36,
+        base_density=0.22,
         max_points_per_pixel=4,
         xy_jitter=0.5,
-        z_layers=3,
+        z_layers=4,
         volumetric_thickness=0.08,
         z_scale=0.82,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.95,
     ),
-    # Text/Logo: high contrast, low Z variation, tight volumetric shell.
+    # Target ~600k — text/logo is mostly dark; dense bright strokes.
     "text_logo": CrystalParams(
-        base_density=0.6,
-        max_points_per_pixel=6,
+        base_density=0.30,
+        max_points_per_pixel=4,
         xy_jitter=0.3,
-        z_layers=2,
+        z_layers=3,
         volumetric_thickness=0.04,
         z_scale=0.5,
         contrast=1.5,

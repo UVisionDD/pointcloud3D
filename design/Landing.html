@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pointcloud3d — studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="pointcloud.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "rgb(240 130 210)",
+  "theme": "dark"
+}/*EDITMODE-END*/;
+
+const PRESET_PARAMS = {
+  portrait:  { density: 0.55, depth: 1.00, jitter: 0.30, pointy: 0.60 },
+  pet:       { density: 0.70, depth: 1.05, jitter: 0.35, pointy: 0.70 },
+  landscape: { density: 0.85, depth: 0.80, jitter: 0.25, pointy: 0.40 },
+  object:    { density: 0.50, depth: 1.15, jitter: 0.18, pointy: 0.80 },
+  logo:      { density: 0.35, depth: 1.20, jitter: 0.10, pointy: 0.90 },
+};
+
+function normRgb(s) {
+  const m = s.match(/rgb\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)\s*\)/);
+  return m ? `rgb(${m[1]},${m[2]},${m[3]})` : s;
+}
+
+function App() {
+  const saved = (() => { try { return JSON.parse(localStorage.getItem("pc3d-state") || "{}"); } catch { return {}; } })();
+  const [theme, setTheme] = useState(saved.theme || TWEAK_DEFAULTS.theme);
+  const [accent, setAccent] = useState(saved.accent || TWEAK_DEFAULTS.accent);
+  const [tweaksOn, setTweaksOn] = useState(false);
+  const [view, setView] = useState("studio");
+
+  const [signedIn, setSignedIn] = useState(saved.signedIn || false);
+  const [plan, setPlan] = useState(saved.plan || null);
+  const [credits, setCredits] = useState(saved.credits ?? 0);
+  const [authOpen, setAuthOpen] = useState(false);
+
+  const [photo, setPhoto] = useState(null);
+  const [procStage, setProcStage] = useState("idle");
+  const [procProgress, setProcProgress] = useState(0);
+  const [bgRemoved, setBgRemoved] = useState(true);
+  const [preset, setPreset] = useState("portrait");
+  const [laser, setLaser] = useState("xtool");
+  const [lines, setLines] = useState(["", "", ""]);
+  const [checkout, setCheckout] = useState(null);
+  const [selectedFormats, setSelectedFormats] = useState(new Set(["STL", "GLB", "DXF", "PLY", "XYZ"]));
+
+  const [params, setParams] = useState({
+    density: 0.55, depth: 1.00, jitter: 0.30, pointy: 0.60, auto: true,
+    brightness: 0, contrast: 1.0, gamma: 1.0, zlayers: 60, marginX: 3, marginY: 3, invert: false,
+  });
+
+  useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--accent", accent);
+    const m = accent.match(/rgb\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/);
+    if (m) {
+      const [_, r, g, b] = m;
+      root.style.setProperty("--accent-dim", `rgba(${r}, ${g}, ${b}, 0.15)`);
+      root.style.setProperty("--accent-glow", `rgba(${r}, ${g}, ${b}, 0.4)`);
+    }
+  }, [accent]);
+
+  useEffect(() => { const p = PRESET_PARAMS[preset]; if (p) setParams((prev) => ({ ...prev, ...p })); }, [preset]);
+
+  useEffect(() => { try { localStorage.setItem("pc3d-state", JSON.stringify({ theme, accent, signedIn, plan, credits })); } catch {} }, [theme, accent, signedIn, plan, credits]);
+
+  useEffect(() => {
+    const onMsg = (e) => { const d = e.data || {}; if (d.type === "__activate_edit_mode") setTweaksOn(true); if (d.type === "__deactivate_edit_mode") setTweaksOn(false); };
+    window.addEventListener("message", onMsg);
+    window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  const persistEdits = (edits) => window.parent.postMessage({ type: "__edit_mode_set_keys", edits }, "*");
+
+  useEffect(() => {
+    if (procStage !== "processing") return;
+    let p = procProgress;
+    const t = setInterval(() => {
+      p += 2 + Math.random() * 4;
+      if (p >= 100) { p = 100; setProcProgress(100); clearInterval(t); setTimeout(() => setProcStage("ready"), 300); }
+      else setProcProgress(p);
+    }, 110);
+    return () => clearInterval(t);
+  }, [procStage]);
+
+  const onPhotoLoad = (p) => { setPhoto(p); setProcProgress(0); setProcStage("processing"); };
+  const onReset = () => { setPhoto(null); setProcStage("idle"); setProcProgress(0); };
+
+  const onCheckoutComplete = (co) => {
+    if (co.mode === "sub") {
+      setPlan(co.k);
+      const amounts = { basic: 30, pro: 100, max: 9999 };
+      setCredits(amounts[co.k] || 0);
+      if (!signedIn) setSignedIn(true);
+    }
+  };
+
+  return (
+    <>
+      <Nav theme={theme} setTheme={(t) => { setTheme(t); persistEdits({ theme: t }); }}
+        signedIn={signedIn} setSignedIn={setSignedIn} credits={credits} plan={plan}
+        onNav={setView} active={view} onAuth={setAuthOpen} />
+
+      {view === "studio" && (
+        <div className="studio">
+          <SettingsRail preset={preset} setPreset={setPreset}
+            laser={laser} setLaser={setLaser}
+            params={params} setParams={setParams}
+            lines={lines} setLines={setLines}
+            photo={photo} bgRemoved={bgRemoved} setBgRemoved={setBgRemoved}
+            onReset={onReset} />
+          <div className="studio-grid">
+            <Preview state={procStage} params={params} lines={lines} accent={normRgb(accent)}
+              photo={photo} bgRemoved={bgRemoved} procProgress={procProgress}
+              onLoad={onPhotoLoad} onReset={onReset} />
+            <ExportBar signedIn={signedIn} plan={plan} credits={credits} setCredits={setCredits}
+              onCheckout={setCheckout} hasPhoto={!!photo && procStage === "ready"}
+              selectedFormats={selectedFormats} setSelectedFormats={setSelectedFormats} />
+          </div>
+        </div>
+      )}
+
+      {view === "guide" && <Guide />}
+      {view === "pricing" && <Pricing onBuy={setCheckout} currentPlan={plan} />}
+
+      <CheckoutModal checkout={checkout} onClose={() => setCheckout(null)} onComplete={onCheckoutComplete} />
+      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} onSignIn={() => setSignedIn(true)} />
+      <TweaksPanel active={tweaksOn} accent={accent} setAccent={(v) => { setAccent(v); persistEdits({ accent: v }); }} />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -30,13 +30,17 @@ class CrystalParams:
 
     # Density / distribution.
     # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    base_density: float = 0.35
+    base_density: float = 0.22
     # Max number of points a single pixel can emit across all Z layers.
-    max_points_per_pixel: int = 4
+    max_points_per_pixel: int = 5
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
     # Number of Z layers to sample (volumetric thickness in Z).
-    z_layers: int = 3
+    z_layers: int = 4
+    # Cap the longest source image dimension before depth + sampling, so the
+    # output point count is predictable (target ~1-1.5M for a 1600px image).
+    # Set 0 to disable.
+    sampling_max_side_px: int = 1600
     # Volumetric thickness around the depth surface (fraction of size_z, 0..1).
     volumetric_thickness: float = 0.08
     # Z scale: 0..1. Scales how much of crystal depth the shape occupies.

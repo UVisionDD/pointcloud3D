@@ -89,6 +89,13 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
         image = Image.open(opts.image_path).convert("RGB")
     else:
         raise ValueError("Must provide image or image_path in PipelineOptions.")
+    # --- Optional downsample to keep point count predictable ---
+    max_side = opts.crystal.sampling_max_side_px
+    if max_side and max(image.size) > max_side:
+        scale = max_side / max(image.size)
+        new_size = (max(1, int(round(image.size[0] * scale))),
+                    max(1, int(round(image.size[1] * scale))))
+        image = image.resize(new_size, Image.LANCZOS)
     image_rgb = np.asarray(image)
 
     # --- Optional background removal (must happen before depth) ---
