@@ -2,81 +2,77 @@ import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
 import { NavBar } from "@/components/navbar";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { HeroOrb } from "@/components/hero-orb";
 
 export default async function LandingPage() {
   const { userId } = await auth();
   const signedIn = Boolean(userId);
+
+  const features = [
+    {
+      n: "01",
+      h: "Designed for crystal",
+      b: "Depth tuned for how a fibre laser actually creates fracture points inside glass. Not a depth map dumped into a mesh — a density field shaped for engraving.",
+    },
+    {
+      n: "02",
+      h: "Every format your laser wants",
+      b: "STL for RK-CAD & BSL, GLB for xTool, DXF for green DPSS lasers, plus PLY and XYZ. One job produces all formats.",
+    },
+    {
+      n: "03",
+      h: "30-day re-exports",
+      b: "Unhappy with the first pass? Tweak density, depth, contrast — re-export for free within 30 days of purchase.",
+    },
+  ];
+
   return (
     <>
       <NavBar />
       <main className="flex-1">
-        <section className="mx-auto max-w-6xl px-6 py-20 text-center">
-          <h1 className="text-4xl font-bold tracking-tight sm:text-6xl">
-            Sharper point clouds for laser engraving.
+        <section className="pc-hero">
+          <div className="pc-kicker">photo → point cloud → crystal</div>
+          <h1>
+            Sharper point clouds<br />for <span className="accented">crystal engraving.</span>
           </h1>
-          <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground">
-            Turn any photo into a 3D point cloud tuned for inner-crystal laser
-            engraving. Pay per export or subscribe — unlimited re-exports of the
-            same photo for 30 days.
+          <p className="lead">
+            Turn any photo into a 3D point cloud of 500k–2M fracture points,
+            tuned for inner-crystal laser engraving. Pay per export or subscribe —
+            unlimited re-exports of the same photo for 30 days.
           </p>
-          <div className="mt-8 flex items-center justify-center gap-3">
+          <div className="pc-hero-ctas">
             {signedIn ? (
               <>
-                <Link href="/dashboard/upload">
-                  <Button size="lg">Upload a photo</Button>
-                </Link>
-                <Link href="/dashboard">
-                  <Button size="lg" variant="outline">
-                    My jobs
-                  </Button>
-                </Link>
+                <Link href="/dashboard/upload" className="pc-btn pc-btn-primary pc-btn-lg">Upload a photo</Link>
+                <Link href="/dashboard" className="pc-btn pc-btn-ghost pc-btn-lg">My jobs</Link>
               </>
             ) : (
               <>
-                <Link href="/sign-up">
-                  <Button size="lg">Start for free</Button>
-                </Link>
-                <Link href="/pricing">
-                  <Button size="lg" variant="outline">
-                    See pricing
-                  </Button>
-                </Link>
+                <Link href="/sign-up" className="pc-btn pc-btn-primary pc-btn-lg">Start for free</Link>
+                <Link href="/pricing" className="pc-btn pc-btn-ghost pc-btn-lg">See pricing</Link>
               </>
             )}
           </div>
+          <HeroOrb />
         </section>
 
-        <section className="mx-auto grid max-w-6xl gap-4 px-6 pb-20 sm:grid-cols-3">
-          {[
-            {
-              title: "Designed for crystal",
-              body: "Depth tuned for how the laser actually creates fracture points in glass. Not a depth map dumped into a mesh.",
-            },
-            {
-              title: "Every format your laser wants",
-              body: "STL for RK-CAD / BSL, GLB for xTool, DXF for green lasers, plus PLY and XYZ. One job, all formats.",
-            },
-            {
-              title: "30-day re-exports",
-              body: "Unhappy with the first pass? Tweak parameters and re-export for free within 30 days of purchase.",
-            },
-          ].map((f) => (
-            <Card key={f.title}>
-              <CardHeader>
-                <CardTitle>{f.title}</CardTitle>
-              </CardHeader>
-              <CardContent className="text-muted-foreground">{f.body}</CardContent>
-            </Card>
+        <section className="feat-grid">
+          {features.map((f) => (
+            <div key={f.n} className="feat-card">
+              <div className="feat-n">{f.n}</div>
+              <div className="feat-h">{f.h}</div>
+              <div className="feat-b">{f.b}</div>
+            </div>
           ))}
         </section>
       </main>
 
-      <footer className="border-t">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6 text-sm text-muted-foreground">
+      <footer className="pc-footer">
+        <div className="pc-footer-inner">
           <span>© {new Date().getFullYear()} pointcloud3D</span>
-          <div className="flex gap-4">
+          <div style={{ display: "flex", gap: 16 }}>
+            <Link href="/guide">Guide</Link>
+            <Link href="/pricing">Pricing</Link>
             <Link href="/terms">Terms</Link>
             <Link href="/privacy">Privacy</Link>
           </div>

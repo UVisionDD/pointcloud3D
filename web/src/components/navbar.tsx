@@ -1,47 +1,34 @@
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { auth } from "@clerk/nextjs/server";
-import { Button } from "@/components/ui/button";
 
-export async function NavBar() {
+import { Wordmark } from "@/components/wordmark";
+
+export async function NavBar({ active }: { active?: "studio" | "guide" | "pricing" }) {
   const { userId } = await auth();
   const signedIn = Boolean(userId);
 
   return (
-    <header className="border-b">
-      <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <Link href="/" className="flex items-center gap-2 font-semibold">
-          <span className="text-lg">pointcloud3D</span>
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            sharper point clouds for crystal engraving
-          </span>
+    <header className="pc-nav">
+      <nav className="pc-nav-inner">
+        <Link href="/">
+          <Wordmark size={14} />
         </Link>
-        <div className="flex items-center gap-2">
-          <Link
-            href="/pricing"
-            className="hidden rounded-md px-3 py-1.5 text-sm hover:bg-accent sm:inline-block"
-          >
-            Pricing
-          </Link>
+        <div className="pc-nav-links">
+          <Link href="/dashboard" className={active === "studio" ? "on" : ""}>Studio</Link>
+          <Link href="/guide" className={active === "guide" ? "on" : ""}>Guide</Link>
+          <Link href="/pricing" className={active === "pricing" ? "on" : ""}>Pricing</Link>
+        </div>
+        <div className="pc-nav-right">
           {signedIn ? (
             <>
-              <Link href="/dashboard">
-                <Button size="sm" variant="outline">
-                  Dashboard
-                </Button>
-              </Link>
+              <Link href="/dashboard" className="pc-btn pc-btn-ghost">Dashboard</Link>
               <UserButton />
             </>
           ) : (
             <>
-              <Link href="/sign-in">
-                <Button variant="ghost" size="sm">
-                  Sign in
-                </Button>
-              </Link>
-              <Link href="/sign-up">
-                <Button size="sm">Get started</Button>
-              </Link>
+              <Link href="/sign-in" className="pc-btn pc-btn-ghost">Sign in</Link>
+              <Link href="/sign-up" className="pc-btn pc-btn-primary">Get started</Link>
             </>
           )}
         </div>
