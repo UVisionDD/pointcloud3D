@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter_Tight, JetBrains_Mono } from "next/font/google";
+import { Inter_Tight, JetBrains_Mono, DM_Sans } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -15,6 +15,11 @@ const jetbrainsMono = JetBrains_Mono({
   variable: "--font-jetbrains-mono",
   subsets: ["latin"],
   weight: ["400", "500", "600"],
+});
+
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
+  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
@@ -36,8 +41,8 @@ export default function RootLayout({
     <ClerkProvider>
       <html
         lang="en"
-        data-theme="dark"
-        className={`${interTight.variable} ${jetbrainsMono.variable} h-full antialiased`}
+        data-theme="light"
+        className={`${interTight.variable} ${jetbrainsMono.variable} ${dmSans.variable} h-full antialiased`}
       >
         <body className="min-h-full flex flex-col">
           {children}
