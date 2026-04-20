@@ -186,7 +186,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, contentType, sizeBytes: file.size }),
       });
-      if (!presign.ok) throw new Error("upload-url failed");
+      if (!presign.ok) {
+        const msg = await presign.json().then((b) => b?.error).catch(() => null);
+        throw new Error(typeof msg === "string" ? msg : `upload-url failed (${presign.status})`);
+      }
       const { uploadUrl, key } = (await presign.json()) as { uploadUrl: string; key: string; jobId: string };
 
       setProcProgress(10);
@@ -218,7 +221,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ inputKey: key, options: opts }),
       });
-      if (!job.ok) throw new Error("job create failed");
+      if (!job.ok) {
+        const msg = await job.json().then((b) => b?.error).catch(() => null);
+        throw new Error(typeof msg === "string" ? msg : `job create failed (${job.status})`);
+      }
       const { jobId: newJobId } = (await job.json()) as { jobId: string };
       setJobId(newJobId);
       setProcProgress(35);
