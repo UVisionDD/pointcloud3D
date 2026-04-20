@@ -1,0 +1,32 @@
+export interface JobOptions {
+  formats?: ("stl" | "glb" | "dxf" | "ply" | "xyz")[];
+  remove_bg?: boolean;
+  face_aware?: boolean;
+  face_strength?: number;
+  size_x?: number;
+  size_y?: number;
+  size_z?: number;
+  margin_x?: number;
+  margin_y?: number;
+  margin_z?: number;
+  base_density?: number;
+  max_points_per_pixel?: number;
+  xy_jitter?: number;
+  z_layers?: number;
+  volumetric_thickness?: number;
+  z_scale?: number;
+  brightness?: number;
+  contrast?: number;
+  gamma?: number;
+  invert_depth?: boolean;
+  depth_gamma?: number;
+  point_size_mm?: number;
+  content_preset?: string;
+  laser_preset?: string;
+  text_lines?: { text: string; font_size_px: number }[];
+  seed?: number;
+  density?: number;
+  depth?: number;
+  jitter?: number;
+  pointy?: number;
+}
