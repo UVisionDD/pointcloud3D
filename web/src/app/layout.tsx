@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter_Tight, JetBrains_Mono } from "next/font/google";
+import { Inter_Tight, JetBrains_Mono, DM_Sans } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Toaster } from "sonner";
 import "./globals.css";
@@ -14,10 +14,15 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
-  title: "pointcloud3D — Photo to 3D point cloud for crystal engraving",
+  title: "pointcloud·3d — studio",
   description:
-    "Turn any photo into a 3D point cloud of 500k–2M fracture points, tuned for inner-crystal laser engraving.",
+    "Turn any photo into a 3D point cloud tuned for inner-crystal laser engraving.",
 };
 
 export default function RootLayout({
@@ -29,9 +34,10 @@ export default function RootLayout({
     <ClerkProvider>
       <html
         lang="en"
-        className={`${interTight.variable} ${jetbrainsMono.variable}`}
+        data-theme="light"
+        className={`${interTight.variable} ${jetbrainsMono.variable} ${dmSans.variable}`}
       >
-        <body className="flex min-h-screen flex-col">
+        <body>
           {children}
           <Toaster richColors />
         </body>
