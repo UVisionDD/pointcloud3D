@@ -18,6 +18,14 @@ from pathlib import Path
 
 from dataclasses import asdict
 
+# Load .env sitting next to this file so `python job_worker.py` just works.
+# Silently no-op if python-dotenv isn't installed or there's no .env.
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass
+
 from pipeline import PipelineOptions, run_pipeline, load_depth_model
 from pointcloud import CrystalParams
 from presets import apply_content_preset, apply_laser_preset
