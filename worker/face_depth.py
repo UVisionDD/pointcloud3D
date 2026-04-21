@@ -40,15 +40,13 @@ class FaceBox:
         return FaceBox(x0, y0, x1 - x0, y1 - y0, self.score)
 
 
-def detect_faces(image_rgb: np.ndarray, min_score: float = 0.5) -> list[FaceBox]:
-    """Detect faces using MediaPipe (model_selection=1: full range, to 5m).
-
-    image_rgb: (H, W, 3) uint8. Returns a list of FaceBox.
+def _detect_faces_mediapipe(image_rgb: np.ndarray, min_score: float) -> list[FaceBox]:
+    """Primary path: MediaPipe's `solutions.face_detection`. Not available on
+    macOS ARM builds of mediapipe 0.10.14+ (the `solutions` module was
+    dropped), so callers must tolerate AttributeError / ModuleNotFoundError.
     """
-    if mp is None:
-        raise RuntimeError(
-            "mediapipe not installed. `pip install mediapipe` to use face-aware depth."
-        )
+    if mp is None or not hasattr(mp, "solutions"):
+        raise AttributeError("mediapipe.solutions not available")
     h, w = image_rgb.shape[:2]
     with mp.solutions.face_detection.FaceDetection(
         model_selection=1, min_detection_confidence=min_score
@@ -70,6 +68,50 @@ def detect_faces(image_rgb: np.ndarray, min_score: float = 0.5) -> list[FaceBox]
         score = float(det.score[0]) if det.score else 0.0
         boxes.append(FaceBox(x, y, bw, bh, score))
     return boxes
+
+
+def _detect_faces_opencv(image_rgb: np.ndarray) -> list[FaceBox]:
+    """Fallback path: OpenCV Haar cascade, bundled with opencv-python. Lower
+    accuracy than MediaPipe (frontal faces only, sensitive to lighting) but
+    always available — no downloads, no native code quirks.
+    """
+    import cv2
+
+    xml_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(xml_path)
+    if cascade.empty():
+        return []
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    # scaleFactor=1.1, minNeighbors=5 is the cv2 docs default; minSize=30px
+    # keeps tiny false-positives out.
+    dets = cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
+    boxes: list[FaceBox] = []
+    for (x, y, w, h) in dets:
+        # Haar doesn't give a confidence score; use 1.0 so downstream thresholds
+        # don't filter them out.
+        boxes.append(FaceBox(int(x), int(y), int(w), int(h), 1.0))
+    return boxes
+
+
+def detect_faces(image_rgb: np.ndarray, min_score: float = 0.5) -> list[FaceBox]:
+    """Try MediaPipe first, fall back to OpenCV Haar, give up silently if
+    both fail. Returning [] is a valid outcome — the caller (face_depth)
+    just skips face refinement and uses the global depth map as-is.
+    """
+    try:
+        return _detect_faces_mediapipe(image_rgb, min_score)
+    except (AttributeError, ImportError, ModuleNotFoundError) as e:
+        print(f"[face_depth] mediapipe unavailable ({e}); trying OpenCV Haar")
+    except Exception as e:
+        print(f"[face_depth] mediapipe detection failed ({e}); trying OpenCV Haar")
+
+    try:
+        return _detect_faces_opencv(image_rgb)
+    except Exception as e:
+        print(f"[face_depth] OpenCV face detection failed ({e}); skipping face refinement")
+        return []
 
 
 def _feather_mask(h: int, w: int, box: FaceBox, feather: int) -> np.ndarray:

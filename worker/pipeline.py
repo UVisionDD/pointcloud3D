@@ -132,6 +132,10 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
     ).squeeze().cpu().numpy().astype(np.float32)
 
     # --- Optional face-aware enhancement ---
+    # Best-effort: if face detection or face-depth blending fails for any
+    # reason (mediapipe.solutions missing on macOS ARM, OOM on a huge image,
+    # etc.) we still produce a cloud using the global depth map. Face
+    # refinement is a quality upgrade, not a hard dependency.
     if opts.face_aware:
         try:
             from face_depth import enhance_depth_on_faces
@@ -148,8 +152,8 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
                 strength=opts.face_strength,
             )
             timings["face_depth_ms"] = (time.perf_counter() - t0) * 1000
-        except RuntimeError:
-            # MediaPipe not installed — skip silently.
+        except Exception as e:
+            print(f"[pipeline] face enhancement skipped: {type(e).__name__}: {e}")
             timings["face_depth_ms"] = 0.0
 
     # --- Point cloud ---
