@@ -136,7 +136,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         if (!r.ok) return;
         const data = (await r.json()) as { status?: string };
         if (cancelled) return;
-        if (data.status === "succeeded") {
+        // Worker writes status='done' on success (see worker/db.py mark_done).
+        // The schema comment in lib/db/schema.ts also documents this as the
+        // canonical terminal state.
+        if (data.status === "done") {
           setProcProgress(100);
           setTimeout(() => setProcStage("ready"), 250);
         } else if (data.status === "failed") {
