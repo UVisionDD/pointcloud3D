@@ -23,13 +23,15 @@ export const jobOptionsSchema = z.object({
   margin_y: z.number().min(0).default(3),
   margin_z: z.number().min(0).default(3),
 
-  // Distribution.
-  base_density: z.number().min(0).max(1).default(0.35),
-  max_points_per_pixel: z.number().int().min(1).max(20).default(4),
+  // Distribution. Defaults mirror CrystalParams in worker/pointcloud.py and
+  // target ~500k–1.5M points on a typical portrait after bg removal.
+  base_density: z.number().min(0).max(1).default(0.8),
+  max_points_per_pixel: z.number().int().min(1).max(20).default(10),
   xy_jitter: z.number().min(0).max(2).default(0.5),
-  z_layers: z.number().int().min(1).max(16).default(3),
+  z_layers: z.number().int().min(1).max(16).default(5),
+  sampling_max_side_px: z.number().int().min(256).max(4096).default(2000),
   volumetric_thickness: z.number().min(0).max(1).default(0.08),
-  z_scale: z.number().min(0).max(1).default(0.85),
+  z_scale: z.number().min(0).max(1).default(0.45),
 
   // Tonemap.
   brightness: z.number().min(-1).max(1).default(0),
@@ -39,6 +41,15 @@ export const jobOptionsSchema = z.object({
   // Depth curve.
   invert_depth: z.boolean().default(true),
   depth_gamma: z.number().min(0.1).max(5).default(1),
+
+  // Intensity curve (per-point laser power).
+  intensity_gamma: z.number().min(0.1).max(5).default(1),
+  intensity_floor: z.number().min(0).max(1).default(0.12),
+
+  // Fast-path retune: if set, the worker downloads the cached image_rgb.npy
+  // + depth.npy from this parent job and skips all ML inference. Used by
+  // /api/jobs/[id]/retune to drive live slider changes.
+  reuse_depth_from_job: z.string().uuid().optional(),
 
   // STL point size (mm).
   point_size_mm: z.number().min(0.01).max(1).default(0.08),

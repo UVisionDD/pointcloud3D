@@ -68,6 +68,16 @@ class PipelineOptions:
     # STL point size.
     point_size_mm: float = 0.08
 
+    # Fast-path: if `reuse_depth_from_dir` points at a directory containing
+    # depth.npy + image_rgb.npy (saved by a prior run), skip bg removal, depth
+    # inference, and face-aware enhancement. Only the sampling + export stages
+    # run — turnaround drops from ~5s to ~500ms. This is what powers the
+    # "live slider retune" UX.
+    reuse_depth_from_dir: Path | None = None
+    # If set, save depth.npy + image_rgb.npy to this dir after the slow stages
+    # so a future retune job can skip straight to sampling.
+    save_depth_to_dir: Path | None = None
+
 
 @dataclass
 class PipelineResult:
@@ -82,84 +92,125 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
 
     timings: dict[str, float] = {}
 
-    # --- Load source image ---
-    if opts.image is not None:
-        image = opts.image.convert("RGB")
-    elif opts.image_path is not None:
-        image = Image.open(opts.image_path).convert("RGB")
-    else:
-        raise ValueError("Must provide image or image_path in PipelineOptions.")
-    # --- Optional downsample to keep point count predictable ---
-    max_side = opts.crystal.sampling_max_side_px
-    if max_side and max(image.size) > max_side:
-        scale = max_side / max(image.size)
-        new_size = (max(1, int(round(image.size[0] * scale))),
-                    max(1, int(round(image.size[1] * scale))))
-        image = image.resize(new_size, Image.LANCZOS)
-    image_rgb = np.asarray(image)
-
-    # --- Optional background removal (must happen before depth) ---
-    if opts.remove_bg:
-        from bg_remove import remove_background
-
+    # --- Fast path: reuse cached image_rgb + depth from an earlier job ---
+    # The retune endpoint uses this. Everything up to (and including) depth
+    # inference and face-aware enhancement is skipped — we jump straight to
+    # the Bernoulli sampler, which is where the slider-controlled knobs live.
+    if opts.reuse_depth_from_dir is not None:
+        cache = Path(opts.reuse_depth_from_dir)
+        image_path = cache / "image_rgb.npy"
+        depth_path = cache / "depth.npy"
+        if not image_path.exists() or not depth_path.exists():
+            raise FileNotFoundError(
+                f"reuse_depth_from_dir={cache} is missing image_rgb.npy or depth.npy"
+            )
         t0 = time.perf_counter()
-        image_rgb, _alpha = remove_background(image_rgb)
-        image = Image.fromarray(image_rgb)
-        timings["bg_remove_ms"] = (time.perf_counter() - t0) * 1000
+        image_rgb = np.load(image_path)
+        depth = np.load(depth_path)
+        timings["depth_cache_load_ms"] = (time.perf_counter() - t0) * 1000
+        print(f"[pipeline] loaded cached depth+image from {cache} "
+              f"in {timings['depth_cache_load_ms']:.0f} ms "
+              f"(image {image_rgb.shape}, depth {depth.shape})")
+    else:
+        # --- Load source image ---
+        if opts.image is not None:
+            image = opts.image.convert("RGB")
+        elif opts.image_path is not None:
+            image = Image.open(opts.image_path).convert("RGB")
+        else:
+            raise ValueError("Must provide image or image_path in PipelineOptions.")
+        print(f"[pipeline] source image: {image.size[0]}x{image.size[1]}")
 
-    # --- Depth estimation ---
-    processor, model, device = load_depth_model()
-    inputs = processor(images=image, return_tensors="pt").to(device)
+        # --- Optional downsample to keep point count predictable ---
+        max_side = opts.crystal.sampling_max_side_px
+        if max_side and max(image.size) > max_side:
+            scale = max_side / max(image.size)
+            new_size = (max(1, int(round(image.size[0] * scale))),
+                        max(1, int(round(image.size[1] * scale))))
+            image = image.resize(new_size, Image.LANCZOS)
+            print(f"[pipeline] resized to sampling cap: {image.size[0]}x{image.size[1]} "
+                  f"(cap={max_side}px)")
+        image_rgb = np.asarray(image)
 
-    # Warmup first call on MPS (kernels compile).
-    with torch.no_grad():
-        _ = model(**inputs)
-    if device.type == "mps":
-        torch.mps.synchronize()
-
-    t0 = time.perf_counter()
-    with torch.no_grad():
-        outputs = model(**inputs)
-    if device.type == "mps":
-        torch.mps.synchronize()
-    timings["depth_ms"] = (time.perf_counter() - t0) * 1000
-
-    depth = torch.nn.functional.interpolate(
-        outputs.predicted_depth.unsqueeze(1),
-        size=image.size[::-1],  # (H, W)
-        mode="bicubic",
-        align_corners=False,
-    ).squeeze().cpu().numpy().astype(np.float32)
-
-    # --- Optional face-aware enhancement ---
-    # Best-effort: if face detection or face-depth blending fails for any
-    # reason (mediapipe.solutions missing on macOS ARM, OOM on a huge image,
-    # etc.) we still produce a cloud using the global depth map. Face
-    # refinement is a quality upgrade, not a hard dependency.
-    if opts.face_aware:
-        try:
-            from face_depth import enhance_depth_on_faces
+        # --- Optional background removal (must happen before depth) ---
+        if opts.remove_bg:
+            from bg_remove import remove_background
 
             t0 = time.perf_counter()
-            depth = enhance_depth_on_faces(
-                image_rgb,
-                depth,
-                processor,
-                model,
-                device,
-                pad_frac=opts.face_pad_frac,
-                feather_px=opts.face_feather_px,
-                strength=opts.face_strength,
-            )
-            timings["face_depth_ms"] = (time.perf_counter() - t0) * 1000
-        except Exception as e:
-            print(f"[pipeline] face enhancement skipped: {type(e).__name__}: {e}")
-            timings["face_depth_ms"] = 0.0
+            image_rgb, _alpha = remove_background(image_rgb)
+            image = Image.fromarray(image_rgb)
+            timings["bg_remove_ms"] = (time.perf_counter() - t0) * 1000
+            nonzero = int((_alpha > 0).sum()) if _alpha is not None else -1
+            total = int(_alpha.size) if _alpha is not None else -1
+            frac = (nonzero / total) if total > 0 else 0.0
+            print(f"[pipeline] bg_remove: subject pixels={nonzero}/{total} "
+                  f"({frac*100:.1f}%)")
+
+        # --- Depth estimation ---
+        processor, model, device = load_depth_model()
+        inputs = processor(images=image, return_tensors="pt").to(device)
+
+        # Warmup first call on MPS (kernels compile).
+        with torch.no_grad():
+            _ = model(**inputs)
+        if device.type == "mps":
+            torch.mps.synchronize()
+
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            outputs = model(**inputs)
+        if device.type == "mps":
+            torch.mps.synchronize()
+        timings["depth_ms"] = (time.perf_counter() - t0) * 1000
+
+        depth = torch.nn.functional.interpolate(
+            outputs.predicted_depth.unsqueeze(1),
+            size=image.size[::-1],  # (H, W)
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze().cpu().numpy().astype(np.float32)
+        print(f"[pipeline] depth: shape={depth.shape}, "
+              f"range={float(depth.min()):.3f}..{float(depth.max()):.3f}")
+
+        # --- Optional face-aware enhancement ---
+        # Best-effort: if face detection or face-depth blending fails for any
+        # reason (mediapipe.solutions missing on macOS ARM, OOM on a huge image,
+        # etc.) we still produce a cloud using the global depth map. Face
+        # refinement is a quality upgrade, not a hard dependency.
+        if opts.face_aware:
+            try:
+                from face_depth import enhance_depth_on_faces
+
+                t0 = time.perf_counter()
+                depth = enhance_depth_on_faces(
+                    image_rgb,
+                    depth,
+                    processor,
+                    model,
+                    device,
+                    pad_frac=opts.face_pad_frac,
+                    feather_px=opts.face_feather_px,
+                    strength=opts.face_strength,
+                )
+                timings["face_depth_ms"] = (time.perf_counter() - t0) * 1000
+            except Exception as e:
+                print(f"[pipeline] face enhancement skipped: {type(e).__name__}: {e}")
+                timings["face_depth_ms"] = 0.0
+
+        # --- Persist image_rgb + depth so a future retune can skip the model ---
+        if opts.save_depth_to_dir is not None:
+            cache_dir = Path(opts.save_depth_to_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            np.save(cache_dir / "image_rgb.npy", image_rgb)
+            np.save(cache_dir / "depth.npy", depth)
+            print(f"[pipeline] cached depth+image to {cache_dir}")
 
     # --- Point cloud ---
     t0 = time.perf_counter()
     points = generate_points(image_rgb, depth, opts.crystal)
     timings["points_ms"] = (time.perf_counter() - t0) * 1000
+    print(f"[pipeline] generated {points.shape[0]} points "
+          f"in {timings['points_ms']:.0f} ms")
 
     # --- Text overlay points (appended) ---
     # Text points come back as (M, 3). Main points are now (N, 4) with an

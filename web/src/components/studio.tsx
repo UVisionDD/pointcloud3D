@@ -91,6 +91,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [bgRemoved, setBgRemoved] = useState(true);
   const [photo, setPhoto] = useState<{ name: string; size: number; previewUrl: string; file: File } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  // Parent job id — the *first* full-inference job for this photo, whose
+  // cached depth map all subsequent retune jobs reuse. Stays fixed across
+  // retunes so we don't repeatedly re-run the ~2-3s depth model.
+  const [parentJobId, setParentJobId] = useState<string | null>(null);
   const [procStage, setProcStage] = useState<"idle" | "uploading" | "processing" | "ready" | "error">("idle");
   const [procProgress, setProcProgress] = useState(0);
   const [selectedFormat, setSelectedFormat] = useState<string>("GLB");
@@ -98,6 +102,11 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   // URL of the result PLY the 3D viewer loads once the worker finishes.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [pointCount, setPointCount] = useState<number | null>(null);
+  // Debounce handle for slider-driven retunes.
+  const retuneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Prevents the "params changed → retune" effect from firing on the very
+  // first render after a successful upload (would re-queue the same job).
+  const skipNextRetuneRef = useRef(false);
 
   // Apply theme
   useEffect(() => {
@@ -177,13 +186,124 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
 
   const onReset = () => {
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
+    if (retuneTimerRef.current) clearTimeout(retuneTimerRef.current);
+    retuneTimerRef.current = null;
     setPhoto(null);
     setJobId(null);
+    setParentJobId(null);
     setProcStage("idle");
     setProcProgress(0);
     setPreviewUrl(null);
     setPointCount(null);
   };
+
+  /**
+   * Map the UI params to the server-side job options shape. Kept as a pure
+   * function so both the initial upload and the retune path produce the same
+   * payload (minus `reuse_depth_from_job`, which retune adds itself).
+   *
+   * UI ranges are friendlier than the raw worker ones — e.g. `density` is 0..1
+   * and we feed it straight into `base_density`, `depth` is 0.4..1.3 and we
+   * scale the default z_scale by it, `zlayers` is 20..120 on the slider but
+   * the sampler only wants 3..8.
+   */
+  const buildJobOptions = useCallback(() => {
+    // Clamp z_scale in [0.1, 1.0] — below 0.1 the crystal looks flat, above 1
+    // the subject's nose sticks out of the block.
+    const zScale = Math.max(0.1, Math.min(1.0, 0.45 * params.depth));
+    // Map the 20..120 UI slider to 3..8 real Bernoulli layers. More layers
+    // cost more points but smooth the z banding.
+    const zLayers = Math.max(3, Math.min(8, Math.round(params.zlayers / 15)));
+    // "Sharpness" slider — pointier = smaller tet on STL. Inverse mapping so
+    // pointy=1 gives the crispest stipple, pointy=0 gives a softer look.
+    const pointSizeMm = Math.max(0.04, 0.12 - 0.08 * params.pointy);
+    return {
+      formats: Array.from(new Set([
+        "ply" as const,
+        selectedFormat.toLowerCase() as "stl" | "glb" | "dxf" | "ply" | "xyz",
+      ])),
+      remove_bg: bgRemoved,
+      face_aware: true,
+      face_strength: 0.8,
+      size_x: 50,
+      size_y: 50,
+      size_z: 80,
+      margin_x: params.marginX,
+      margin_y: params.marginY,
+      margin_z: 3,
+      base_density: Math.max(0.05, Math.min(1.0, params.density)),
+      max_points_per_pixel: 10,
+      xy_jitter: Math.max(0, Math.min(2, params.jitter)),
+      z_layers: zLayers,
+      sampling_max_side_px: 2000,
+      volumetric_thickness: 0.08,
+      z_scale: zScale,
+      brightness: params.brightness,
+      contrast: params.contrast,
+      gamma: params.gamma,
+      invert_depth: params.invert,
+      depth_gamma: 1,
+      intensity_gamma: 1,
+      intensity_floor: 0.12,
+      point_size_mm: pointSizeMm,
+      content_preset: PRESET_TO_SERVER[preset],
+      laser_preset: LASER_TO_SERVER[laser],
+      text_lines: lines.filter(Boolean).map((t) => ({ text: t, font_size_px: 64 })),
+      seed: 42,
+    };
+  }, [params, selectedFormat, bgRemoved, preset, laser, lines]);
+
+  /**
+   * Fire a retune job off the current parent. The worker downloads the
+   * parent's cached depth + image and runs only the sampling + export stages,
+   * so this typically comes back in < 1s. Called from a debounced effect
+   * when any slider changes.
+   */
+  const requestRetune = useCallback(async () => {
+    if (!parentJobId) return;
+    try {
+      const options = buildJobOptions();
+      const r = await fetch(`/api/jobs/${parentJobId}/retune`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ options }),
+      });
+      if (!r.ok) {
+        // 409 no_depth_cache means the parent job predates depth caching.
+        // Silently ignore — we'll keep showing the stale preview until the
+        // user uploads a new photo.
+        return;
+      }
+      const { jobId: childId } = (await r.json()) as { jobId: string };
+      setJobId(childId);
+      // Don't clear previewUrl — keep showing the stale cloud until the new
+      // one lands. That looks less jarring than a blank canvas.
+      setProcProgress(60);
+      setProcStage("processing");
+    } catch {
+      // network errors during retune are silent — we still have the old cloud.
+    }
+  }, [parentJobId, buildJobOptions]);
+
+  // Debounced auto-retune: any param / preset / format change after the first
+  // full job has a cached depth map queues a retune ~450ms after the user
+  // stops fiddling. Cheap (~500ms roundtrip on a small Mac Mini) so the cloud
+  // feels almost live.
+  useEffect(() => {
+    if (!parentJobId) return;
+    if (skipNextRetuneRef.current) {
+      skipNextRetuneRef.current = false;
+      return;
+    }
+    if (retuneTimerRef.current) clearTimeout(retuneTimerRef.current);
+    retuneTimerRef.current = setTimeout(() => {
+      retuneTimerRef.current = null;
+      requestRetune();
+    }, 450);
+    return () => {
+      if (retuneTimerRef.current) clearTimeout(retuneTimerRef.current);
+    };
+  }, [parentJobId, params, preset, laser, bgRemoved, lines, selectedFormat, requestRetune]);
 
   const handleLaserChange = (next: LaserKey) => {
     setLaser(next);
@@ -238,28 +358,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       // because the in-browser 3D preview loads PLY. The extra export is
       // cheap (~1-2s) and it means the preview works even if the user only
       // needs DXF/XYZ for their laser.
-      const wanted = new Set<"stl" | "glb" | "dxf" | "ply" | "xyz">([
-        "ply",
-        selectedFormat.toLowerCase() as "stl" | "glb" | "dxf" | "ply" | "xyz",
-      ]);
-      const opts = {
-        formats: Array.from(wanted),
-        remove_bg: bgRemoved,
-        face_aware: true,
-        face_strength: 0.8,
-        size_x: 50, size_y: 50, size_z: 80,
-        margin_x: params.marginX, margin_y: params.marginY, margin_z: 3,
-        base_density: 0.22, max_points_per_pixel: 5, xy_jitter: params.jitter,
-        z_layers: Math.round(params.zlayers / 15),
-        volumetric_thickness: 0.08, z_scale: 0.85,
-        brightness: params.brightness, contrast: params.contrast, gamma: params.gamma,
-        invert_depth: params.invert, depth_gamma: 1,
-        point_size_mm: 0.08,
-        content_preset: PRESET_TO_SERVER[preset],
-        laser_preset: LASER_TO_SERVER[laser],
-        text_lines: lines.filter(Boolean).map((t) => ({ text: t, font_size_px: 64 })),
-        seed: 42,
-      };
+      const opts = buildJobOptions();
 
       let job: Response;
       try {
@@ -276,7 +375,13 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         throw new Error(typeof msg === "string" ? msg : `job create failed (${job.status})`);
       }
       const { jobId: newJobId } = (await job.json()) as { jobId: string };
+      // Skip the auto-retune effect that would otherwise fire once this new
+      // jobId propagates through the param-changed deps.
+      skipNextRetuneRef.current = true;
       setJobId(newJobId);
+      // Parent id is the *first* full-inference job — all subsequent slider
+      // changes retune against this one so the depth model only runs once.
+      setParentJobId(newJobId);
       setProcProgress(35);
       setProcStage("processing");
     } catch (e) {
@@ -285,7 +390,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     } finally {
       setBusy(false);
     }
-  }, [selectedFormat, bgRemoved, params, preset, laser, lines]);
+  }, [buildJobOptions]);
 
   const onExport = async () => {
     if (!jobId) return;

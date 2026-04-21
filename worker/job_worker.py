@@ -59,6 +59,8 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
     if isinstance(opts_raw, str):
         opts_raw = json.loads(opts_raw)
 
+    # Fallbacks here match the CrystalParams dataclass defaults so a job
+    # row that omits a field doesn't accidentally downgrade to old values.
     crystal = CrystalParams(
         size_x=opts_raw.get("size_x", 50.0),
         size_y=opts_raw.get("size_y", 50.0),
@@ -66,17 +68,20 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         margin_x=opts_raw.get("margin_x", 3.0),
         margin_y=opts_raw.get("margin_y", 3.0),
         margin_z=opts_raw.get("margin_z", 3.0),
-        base_density=opts_raw.get("base_density", 0.35),
-        max_points_per_pixel=opts_raw.get("max_points_per_pixel", 4),
+        base_density=opts_raw.get("base_density", 0.8),
+        max_points_per_pixel=opts_raw.get("max_points_per_pixel", 10),
         xy_jitter=opts_raw.get("xy_jitter", 0.5),
-        z_layers=opts_raw.get("z_layers", 3),
+        z_layers=opts_raw.get("z_layers", 5),
+        sampling_max_side_px=opts_raw.get("sampling_max_side_px", 2000),
         volumetric_thickness=opts_raw.get("volumetric_thickness", 0.08),
-        z_scale=opts_raw.get("z_scale", 0.85),
+        z_scale=opts_raw.get("z_scale", 0.45),
         brightness=opts_raw.get("brightness", 0.0),
         contrast=opts_raw.get("contrast", 1.0),
         gamma=opts_raw.get("gamma", 1.0),
         invert_depth=opts_raw.get("invert_depth", True),
         depth_gamma=opts_raw.get("depth_gamma", 1.0),
+        intensity_gamma=opts_raw.get("intensity_gamma", 1.0),
+        intensity_floor=opts_raw.get("intensity_floor", 0.12),
         seed=opts_raw.get("seed", 42),
     )
     if opts_raw.get("content_preset"):
@@ -126,14 +131,47 @@ def process_job(job: dict) -> None:
     input_key = job["input_key"]
     ext = Path(input_key).suffix.lstrip(".").lower() or "jpg"
 
+    opts_raw = job.get("options") or {}
+    if isinstance(opts_raw, str):
+        opts_raw = json.loads(opts_raw)
+
     with tempfile.TemporaryDirectory(prefix=f"job-{job_id}-") as td:
         workdir = Path(td)
-        src = workdir / f"input.{ext}"
-        download_to_path(input_key, src)
 
         db.set_progress(job_id, 0.1)
         opts = options_from_job_row(job, workdir)
-        opts.image_path = src
+
+        # Retune fast path: if the job points at a parent job with cached
+        # depth + image, download them and wire the pipeline to skip the
+        # slow ML stages. This is what the live-slider UI depends on.
+        reuse_parent = opts_raw.get("reuse_depth_from_job")
+        if reuse_parent:
+            cache_dir = workdir / "depth_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                download_to_path(
+                    f"exports/{user_id}/{reuse_parent}/depth.npy",
+                    cache_dir / "depth.npy",
+                )
+                download_to_path(
+                    f"exports/{user_id}/{reuse_parent}/image_rgb.npy",
+                    cache_dir / "image_rgb.npy",
+                )
+                opts.reuse_depth_from_dir = cache_dir
+                opts.image_path = None
+                print(f"[worker] retune: reusing depth from job {reuse_parent}")
+            except Exception as e:
+                # If the cache is missing we can still fall back to a full
+                # run by downloading the input image — just log and continue.
+                print(f"[worker] retune cache miss ({e}); falling back to full inference")
+                reuse_parent = None
+
+        if not reuse_parent:
+            src = workdir / f"input.{ext}"
+            download_to_path(input_key, src)
+            opts.image_path = src
+            # Always cache depth + image for potential future retunes.
+            opts.save_depth_to_dir = workdir / "depth_cache"
 
         result = run_pipeline(opts)
         db.set_progress(job_id, 0.8)
@@ -147,10 +185,31 @@ def process_job(job: dict) -> None:
             upload_file(key, path, CONTENT_TYPES.get(fmt, "application/octet-stream"))
             result_keys[fmt] = key
 
+        # Upload the depth cache so children of this job can retune without
+        # paying the ML cost again. Only do this on full runs — retunes
+        # reuse the parent's cache, and uploading a copy per retune would
+        # be wasteful.
+        if not reuse_parent:
+            cache_dir = workdir / "depth_cache"
+            if (cache_dir / "depth.npy").exists():
+                upload_file(
+                    f"exports/{user_id}/{job_id}/depth.npy",
+                    cache_dir / "depth.npy",
+                    "application/octet-stream",
+                )
+                upload_file(
+                    f"exports/{user_id}/{job_id}/image_rgb.npy",
+                    cache_dir / "image_rgb.npy",
+                    "application/octet-stream",
+                )
+
         # Record the real point count on the job row so the UI can stop
         # guessing from the slider and show the true number.
         timings = dict(result.timings_ms)
         timings["points_count"] = int(result.points.shape[0])
+        # Expose whether this job has a cacheable depth map — the web UI
+        # uses this to enable retune on the parent job.
+        timings["has_depth_cache"] = 1 if not reuse_parent else 0
 
         db.mark_done(job_id, result_keys, timings)
 

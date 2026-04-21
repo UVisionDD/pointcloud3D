@@ -36,21 +36,25 @@ class CrystalParams:
 
     # Density / distribution.
     # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    base_density: float = 0.22
+    # Bumped to 0.8 so a typical portrait-after-bg-removal lands north of
+    # 500k points — the lower number left us at ~10k on tight subjects.
+    base_density: float = 0.8
     # Max number of points a single pixel can emit across all Z layers.
-    max_points_per_pixel: int = 5
+    max_points_per_pixel: int = 10
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
     # Number of Z layers to sample (volumetric thickness in Z).
-    z_layers: int = 4
+    z_layers: int = 5
     # Cap the longest source image dimension before depth + sampling, so the
-    # output point count is predictable (target ~1-1.5M for a 1600px image).
-    # Set 0 to disable.
-    sampling_max_side_px: int = 1600
+    # output point count is predictable. 2000 px ≈ 3 MP, target ~1.5 M points
+    # for a typical portrait. Set 0 to disable the cap entirely.
+    sampling_max_side_px: int = 2000
     # Volumetric thickness around the depth surface (fraction of size_z, 0..1).
     volumetric_thickness: float = 0.08
     # Z scale: 0..1. Scales how much of crystal depth the shape occupies.
-    z_scale: float = 0.85
+    # 0.45 keeps portraits from looking stretched down the crystal's long
+    # axis — at 0.85 the nose sticks out of the block.
+    z_scale: float = 0.45
 
     # Tonemap knobs on the source image (applied before density sampling).
     brightness: float = 0.0    # -1..1 additive
@@ -128,6 +132,11 @@ def generate_points(
     r, g, b = image_rgb[..., 0], image_rgb[..., 1], image_rgb[..., 2]
     lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
     density = _tonemap(lum.astype(np.float32), params)
+    nonzero_lum = int((density > 0.01).sum())
+    print(f"[pointcloud] image {w}x{h} = {w*h} px, "
+          f"lum mean={float(lum.mean()):.3f}, "
+          f"density mean={float(density.mean()):.3f}, "
+          f"pixels>0.01: {nonzero_lum} ({100*nonzero_lum/(w*h):.1f}%)")
 
     # Intensity map: same tonemap as density, with its own gamma + a floor so
     # dark-but-present points still show up (0 intensity == invisible in most
@@ -179,6 +188,10 @@ def generate_points(
 
         mask = rng.random((h, w)) < layer_p
         ys, xs = np.nonzero(mask)
+        print(f"[pointcloud]   layer {layer_idx}: "
+              f"p_mean={float(layer_p.mean()):.3f}, "
+              f"p_max={float(layer_p.max()):.3f}, "
+              f"emitted={int(xs.size)}")
         if xs.size == 0:
             continue
 

@@ -13,64 +13,68 @@ from pointcloud import CrystalParams
 
 # ---------- Content presets (subject type) ----------
 
+# All presets were re-tuned to target ~500k–1.5M points and tighter Z so the
+# crystal doesn't look stretched on its long axis. Density was previously too
+# conservative (0.22–0.32) which — combined with hard bg-removal zeroing out
+# 60%+ of pixels — dropped the real output to <20k points on portraits.
 CONTENT_PRESETS: dict[str, CrystalParams] = {
     # More face-detail bias, tighter Z range, higher contrast on skin tones.
-    # Target ~1.2M points at 1600px cap.
+    # Target ~800k–1.2M points.
     "portrait": CrystalParams(
-        base_density=0.24,
-        max_points_per_pixel=4,
+        base_density=0.85,
+        max_points_per_pixel=10,
         xy_jitter=0.5,
-        z_layers=4,
+        z_layers=5,
         volumetric_thickness=0.06,
-        z_scale=0.75,
+        z_scale=0.38,
         contrast=1.15,
         gamma=0.95,
         depth_gamma=0.85,
     ),
-    # Target ~1.5M — pets are furrier so higher density.
+    # Pets are furrier so higher density; z_scale slightly more forward.
     "pet": CrystalParams(
-        base_density=0.28,
-        max_points_per_pixel=4,
+        base_density=0.9,
+        max_points_per_pixel=10,
         xy_jitter=0.55,
-        z_layers=4,
+        z_layers=5,
         volumetric_thickness=0.08,
-        z_scale=0.8,
+        z_scale=0.45,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.9,
     ),
-    # Target ~1.8M — landscapes get full Z range + highest density.
+    # Landscapes use the full Z range — horizon depth is the point.
     "landscape": CrystalParams(
-        base_density=0.32,
-        max_points_per_pixel=4,
+        base_density=0.95,
+        max_points_per_pixel=10,
         xy_jitter=0.5,
-        z_layers=5,
+        z_layers=6,
         volumetric_thickness=0.12,
-        z_scale=0.95,
+        z_scale=0.7,
         contrast=1.05,
         gamma=1.0,
         depth_gamma=1.0,
     ),
-    # Target ~900k — objects usually have dark background, effective lum lower.
+    # Objects usually have dark background, effective lum lower — compensate.
     "object": CrystalParams(
-        base_density=0.22,
-        max_points_per_pixel=4,
+        base_density=0.85,
+        max_points_per_pixel=10,
         xy_jitter=0.5,
-        z_layers=4,
+        z_layers=5,
         volumetric_thickness=0.08,
-        z_scale=0.82,
+        z_scale=0.48,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.95,
     ),
-    # Target ~600k — text/logo is mostly dark; dense bright strokes.
+    # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z.
     "text_logo": CrystalParams(
-        base_density=0.30,
-        max_points_per_pixel=4,
+        base_density=0.9,
+        max_points_per_pixel=10,
         xy_jitter=0.3,
-        z_layers=3,
+        z_layers=4,
         volumetric_thickness=0.04,
-        z_scale=0.5,
+        z_scale=0.28,
         contrast=1.5,
         gamma=0.85,
         depth_gamma=1.2,
