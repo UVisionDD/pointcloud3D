@@ -13,7 +13,8 @@ ezdxf==1.4.3
 # Step-2 optional stages. Unpinned for now; pin after first install on the
 # Mac Mini so everyone runs the same versions.
 mediapipe>=0.10,<0.11          # face detection
-rembg>=2.0,<3.0                # background removal (pulls in onnxruntime)
+# rembg dropped its bundled onnxruntime in 2.0.60+. Must use an extra.
+rembg[cpu]>=2.0,<3.0           # background removal
 
 # Server + queue.
 fastapi>=0.115,<0.119

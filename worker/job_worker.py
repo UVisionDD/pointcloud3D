@@ -169,10 +169,19 @@ def main() -> None:
         try:
             process_job(job)
             print(f"[worker] job {job['id']} done")
-        except Exception as e:
-            print(f"[worker] job {job['id']} FAILED: {e}")
+        except BaseException as e:  # noqa: BLE001 — intentional: catch SystemExit too
+            # rembg etc. can raise SystemExit when a backend is missing, which
+            # would otherwise take down the whole worker. Mark the job failed
+            # so the web UI shows a useful error, then keep polling for the
+            # next one. Only re-raise on SIGINT/SIGTERM (KeyboardInterrupt).
+            print(f"[worker] job {job['id']} FAILED: {type(e).__name__}: {e}")
             traceback.print_exc()
-            db.mark_failed(job["id"], f"{type(e).__name__}: {e}")
+            try:
+                db.mark_failed(job["id"], f"{type(e).__name__}: {e}")
+            except Exception as mark_err:
+                print(f"[worker] could not mark job failed: {mark_err}")
+            if isinstance(e, KeyboardInterrupt):
+                raise
 
 
 if __name__ == "__main__":
