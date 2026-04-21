@@ -132,19 +132,27 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     let cancelled = false;
     const poll = async () => {
       try {
-        const r = await fetch(`/api/jobs/${jobId}`);
+        const r = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
         if (!r.ok) return;
-        const data = (await r.json()) as { status?: string };
-        if (cancelled) return;
+        // The API returns { job: { status, progress, error, ... } }.
         // Worker writes status='done' on success (see worker/db.py mark_done).
-        // The schema comment in lib/db/schema.ts also documents this as the
-        // canonical terminal state.
-        if (data.status === "done") {
+        const body = (await r.json()) as {
+          job?: { status?: string; progress?: number; error?: string | null };
+        };
+        const job = body.job;
+        if (cancelled || !job) return;
+        // Prefer the worker's reported progress (0..1) once it exceeds the
+        // fake client progress. Keeps the bar from going backwards.
+        if (typeof job.progress === "number") {
+          const real = Math.round(job.progress * 100);
+          setProcProgress((prev) => (real > prev ? Math.min(real, 99) : prev));
+        }
+        if (job.status === "done") {
           setProcProgress(100);
           setTimeout(() => setProcStage("ready"), 250);
-        } else if (data.status === "failed") {
+        } else if (job.status === "failed") {
           setProcStage("error");
-          toast.error("Processing failed. Try a different photo.");
+          toast.error(job.error || "Processing failed. Try a different photo.");
         }
       } catch {}
     };

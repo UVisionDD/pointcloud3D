@@ -4,6 +4,10 @@ import { eq } from "drizzle-orm";
 
 import { db, schema } from "@/lib/db";
 
+// Polling needs fresh state every time; never let Next or any edge cache it.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const GUEST_USER_ID = "guest";
 
 export async function GET(
