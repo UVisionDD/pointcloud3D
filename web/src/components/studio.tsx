@@ -166,11 +166,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
 
   const handleFile = useCallback(async (file: File) => {
     if (!file) return;
-    if (!signedIn) {
-      toast.info("Sign in to upload.");
-      router.push("/sign-up");
-      return;
-    }
+    // Guests can upload and preview; sign-in is only required at checkout.
     const previewUrl = URL.createObjectURL(file);
     setPhoto({ name: file.name, size: file.size, previewUrl, file });
     setProcStage("uploading");
@@ -235,7 +231,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     } finally {
       setBusy(false);
     }
-  }, [signedIn, router, selectedFormat, bgRemoved, params, preset, laser, lines]);
+  }, [selectedFormat, bgRemoved, params, preset, laser, lines]);
 
   const onExport = async () => {
     if (!jobId) return;

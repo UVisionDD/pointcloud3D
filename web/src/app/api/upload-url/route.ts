@@ -13,7 +13,6 @@ const bodySchema = z.object({
 
 export async function POST(req: Request) {
   const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const json = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(json);
@@ -23,7 +22,9 @@ export async function POST(req: Request) {
 
   const jobId = randomUUID();
   const ext = parsed.data.filename.split(".").pop() ?? "jpg";
-  const key = userImageKey(userId, jobId, ext);
+  // Guests land under a shared prefix; signed-in uploads stay per-user.
+  // Paid export / download is still gated downstream by Clerk + Stripe.
+  const key = userImageKey(userId ?? "guest", jobId, ext);
 
   const { url } = await presignedUpload({
     key,
