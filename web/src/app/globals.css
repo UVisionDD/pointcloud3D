@@ -342,6 +342,12 @@ body.studio-body { overflow: hidden; }
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse at center, black 25%, transparent 78%);
 }
+/* Cloud pane is a WebGL scene — kill the grid overlay so the 3D cloud
+   renders on a clean background. The viewer paints its own dark bg. */
+.pane-body-cloud { background: #05070d; }
+.pane-body-cloud::before { display: none; }
+/* And make sure the three.js <canvas> fills the pane completely. */
+.pane-body-cloud canvas { display: block; width: 100% !important; height: 100% !important; }
 .pane-foot {
   background: var(--bg-card); border-top: 1px solid var(--line);
   padding: 6px 12px; display: flex; align-items: center;

@@ -3,11 +3,17 @@
 Crystal engraving physics (summary):
 - Laser fires focused pulses that create micro-fractures inside the crystal.
 - Each point in the cloud becomes one fracture point. No point == clear crystal.
-- Brighter source pixels => more fracture points (denser cloud in that region).
-- Dark/black source pixels => no points (transparent region in the crystal).
+- Each fracture scatters incident light, so it reads as a bright white dot.
+- More fractures in a region => that region looks brighter / more opaque.
+- So: bright source pixel => dense cloud (bright in the crystal).
+        dark source pixel  => sparse cloud (clear crystal).
 
-So the cloud is density-modulated by image brightness, positioned in XY by the
-pixel grid, and in Z by the depth map.
+Good subsurface engravers *also* modulate per-point laser power by the source
+luminance so highlights aren't just dense, they're also slightly brighter per
+point. xTool Studio, HAOTIAN and most modern subsurface software accept an
+`intensity` scalar per point for exactly this. Historically we only emitted
+(x, y, z); we now emit (x, y, z, intensity) where intensity is the tonemapped
+source luminance in 0..1.
 """
 from __future__ import annotations
 
@@ -57,6 +63,14 @@ class CrystalParams:
     # Gamma applied to normalized depth. <1 pushes details forward.
     depth_gamma: float = 1.0
 
+    # Intensity curve. Applied to the tonemapped luminance before writing it
+    # into the 4th column (and into per-point RGB for viewers). >1 darkens,
+    # <1 brightens. Useful to bias burn power for particular laser tubes.
+    intensity_gamma: float = 1.0
+    # Floor so very-dark-but-still-present points aren't totally invisible
+    # in the viewer. Bumps the minimum intensity towards this value.
+    intensity_floor: float = 0.12
+
     # Deterministic output.
     seed: int = 42
 
@@ -88,10 +102,19 @@ def generate_points(
     depth: np.ndarray,
     params: CrystalParams,
 ) -> np.ndarray:
-    """Return (N, 3) float32 array of XYZ points in millimetres.
+    """Return (N, 4) float32 array of [X_mm, Y_mm, Z_mm, intensity_0to1] points.
 
     image_rgb: (H, W, 3) uint8 in 0..255.
     depth: (H, W) float32, relative depth from Depth Anything V2.
+
+    The 4th column (intensity, 0..1) is the tonemapped source luminance at the
+    pixel that spawned each point. Exporters turn this into:
+      - PLY: per-vertex grayscale colour (so the browser viewer can shade)
+             and a `scalar_intensity` property for CAM tools.
+      - XYZ: a 4th column of 0..1 values.
+      - STL: size of the per-point tetrahedron.
+      - GLB: per-vertex colour.
+    Laser software that only reads XYZ ignores the 4th column harmlessly.
     """
     if image_rgb.shape[:2] != depth.shape:
         raise ValueError(
@@ -105,6 +128,19 @@ def generate_points(
     r, g, b = image_rgb[..., 0], image_rgb[..., 1], image_rgb[..., 2]
     lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
     density = _tonemap(lum.astype(np.float32), params)
+
+    # Intensity map: same tonemap as density, with its own gamma + a floor so
+    # dark-but-present points still show up (0 intensity == invisible in most
+    # viewers and would be a wasted laser pulse).
+    if params.intensity_gamma != 1.0:
+        intensity_map = np.power(density, params.intensity_gamma)
+    else:
+        intensity_map = density.copy()
+    if params.intensity_floor > 0:
+        intensity_map = np.clip(
+            params.intensity_floor + (1.0 - params.intensity_floor) * intensity_map,
+            0.0, 1.0,
+        )
 
     depth_norm = _normalize_depth(depth.astype(np.float32), params)
 
@@ -158,9 +194,11 @@ def generate_points(
         z_offset = (rng.random(xs.size) - 0.5) * vol_thickness_mm
         z_mm = z_surface + z_offset
 
-        pts = np.stack([x_mm, y_mm, z_mm], axis=1).astype(np.float32)
+        inten = intensity_map[ys, xs]
+
+        pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
         all_points.append(pts)
 
     if not all_points:
-        return np.zeros((0, 3), dtype=np.float32)
+        return np.zeros((0, 4), dtype=np.float32)
     return np.concatenate(all_points, axis=0)

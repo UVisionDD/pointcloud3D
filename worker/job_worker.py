@@ -138,14 +138,21 @@ def process_job(job: dict) -> None:
         result = run_pipeline(opts)
         db.set_progress(job_id, 0.8)
 
-        # Upload each export under exports/{user_id}/{job_id}/result.{fmt}
+        # Upload each export under exports/{user_id}/{job_id}/result.{fmt}.
+        # Always also upload a PLY so the in-browser viewer has something
+        # to load, even if the user only asked for STL/DXF.
         result_keys: dict[str, str] = {}
         for fmt, path in result.outputs.items():
             key = f"exports/{user_id}/{job_id}/result.{fmt}"
             upload_file(key, path, CONTENT_TYPES.get(fmt, "application/octet-stream"))
             result_keys[fmt] = key
 
-        db.mark_done(job_id, result_keys, result.timings_ms)
+        # Record the real point count on the job row so the UI can stop
+        # guessing from the slider and show the true number.
+        timings = dict(result.timings_ms)
+        timings["points_count"] = int(result.points.shape[0])
+
+        db.mark_done(job_id, result_keys, timings)
 
 
 def main() -> None:

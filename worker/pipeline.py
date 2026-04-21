@@ -162,9 +162,17 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
     timings["points_ms"] = (time.perf_counter() - t0) * 1000
 
     # --- Text overlay points (appended) ---
+    # Text points come back as (M, 3). Main points are now (N, 4) with an
+    # intensity column. Pad the text cloud with intensity=1.0 (text always
+    # burns at full power) so concat is shape-compatible.
     if opts.text_overlay and opts.text_overlay.lines:
         text_pts = generate_text_points(opts.text_overlay)
         if text_pts.size:
+            if text_pts.shape[1] == 3 and points.shape[1] == 4:
+                text_pts = np.concatenate(
+                    [text_pts, np.ones((text_pts.shape[0], 1), dtype=np.float32)],
+                    axis=1,
+                )
             points = np.concatenate([points, text_pts], axis=0)
 
     # --- Exports ---

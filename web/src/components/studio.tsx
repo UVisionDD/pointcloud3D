@@ -7,6 +7,7 @@ import { UserButton } from "@clerk/nextjs";
 import { toast } from "sonner";
 
 import { PointCloudCanvas } from "@/components/point-cloud-canvas";
+import { PointCloudViewer } from "@/components/point-cloud-viewer";
 import { Wordmark } from "@/components/wordmark";
 
 type PresetKey = "portrait" | "pet" | "landscape" | "object" | "logo";
@@ -94,6 +95,9 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [procProgress, setProcProgress] = useState(0);
   const [selectedFormat, setSelectedFormat] = useState<string>("GLB");
   const [busy, setBusy] = useState(false);
+  // URL of the result PLY the 3D viewer loads once the worker finishes.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [pointCount, setPointCount] = useState<number | null>(null);
 
   // Apply theme
   useEffect(() => {
@@ -137,7 +141,13 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         // The API returns { job: { status, progress, error, ... } }.
         // Worker writes status='done' on success (see worker/db.py mark_done).
         const body = (await r.json()) as {
-          job?: { status?: string; progress?: number; error?: string | null };
+          job?: {
+            status?: string;
+            progress?: number;
+            error?: string | null;
+            timingsMs?: { points_count?: number } | null;
+          };
+          previewUrl?: string | null;
         };
         const job = body.job;
         if (cancelled || !job) return;
@@ -149,6 +159,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         }
         if (job.status === "done") {
           setProcProgress(100);
+          if (body.previewUrl) setPreviewUrl(body.previewUrl);
+          if (job.timingsMs && typeof job.timingsMs.points_count === "number") {
+            setPointCount(job.timingsMs.points_count);
+          }
           setTimeout(() => setProcStage("ready"), 250);
         } else if (job.status === "failed") {
           setProcStage("error");
@@ -167,6 +181,8 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     setJobId(null);
     setProcStage("idle");
     setProcProgress(0);
+    setPreviewUrl(null);
+    setPointCount(null);
   };
 
   const handleLaserChange = (next: LaserKey) => {
@@ -218,8 +234,16 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       if (!put.ok) throw new Error(`R2 PUT rejected (${put.status})`);
       setProcProgress(25);
 
+      // Always ask the worker for PLY alongside whatever the user picked,
+      // because the in-browser 3D preview loads PLY. The extra export is
+      // cheap (~1-2s) and it means the preview works even if the user only
+      // needs DXF/XYZ for their laser.
+      const wanted = new Set<"stl" | "glb" | "dxf" | "ply" | "xyz">([
+        "ply",
+        selectedFormat.toLowerCase() as "stl" | "glb" | "dxf" | "ply" | "xyz",
+      ]);
       const opts = {
-        formats: [selectedFormat.toLowerCase()] as ("stl" | "glb" | "dxf" | "ply" | "xyz")[],
+        formats: Array.from(wanted),
         remove_bg: bgRemoved,
         face_aware: true,
         face_strength: 0.8,
@@ -322,6 +346,8 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             procProgress={procProgress}
             onFile={handleFile}
             onReset={onReset}
+            previewUrl={previewUrl}
+            pointCount={pointCount}
           />
           <ExportBar
             selectedFormat={selectedFormat}
@@ -632,6 +658,7 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 // ---------- Preview (source + cloud panes) ----------
 function Preview({
   procStage, params, lines, photo, bgRemoved, procProgress, onFile, onReset,
+  previewUrl, pointCount,
 }: {
   procStage: "idle" | "uploading" | "processing" | "ready" | "error";
   params: Params;
@@ -641,10 +668,14 @@ function Preview({
   procProgress: number;
   onFile: (f: File) => void;
   onReset: () => void;
+  previewUrl: string | null;
+  pointCount: number | null;
 }) {
   const [srcView, setSrcView] = useState<"photo" | "depth">("photo");
-  const pts = formatPts(300000 + params.density * 2200000);
   const ready = procStage === "ready";
+  // Prefer the worker's real point count once we have it; fall back to the
+  // slider-based estimate until the cloud arrives.
+  const pts = formatPts(pointCount ?? 300000 + params.density * 2200000);
   const fname = photo?.name?.replace(/\.[^.]+$/, "") || "subject_01";
 
   return (
@@ -689,7 +720,8 @@ function Preview({
         )}
       </div>
 
-      {/* Cloud pane — no footer, per design */}
+      {/* Cloud pane — same header+footer skin as the source pane so the two
+          always line up visually. */}
       <div className="pane">
         <div className="pane-chrome">
           <div className="chrome-l">
@@ -699,20 +731,31 @@ function Preview({
             </span>
           </div>
           <span className="mono muted" style={{ fontSize: 10 }}>
-            {ready ? "drag · rotate · scroll" : !photo ? "awaiting photo" : "processing…"}
+            {ready ? "drag · zoom · pan" : !photo ? "awaiting photo" : "processing…"}
           </span>
         </div>
-        <div className="pane-body">
-          <div style={{ position: "absolute", inset: 0 }}>
-            <PointCloudCanvas
-              density={ready ? params.density : 0.18}
-              depth={ready ? params.depth : 1.0}
-              jitter={ready ? params.jitter : 0.15}
-              pointy={ready ? params.pointy : 0.5}
-              rotationSpeed={ready ? (params.auto ? 0.28 : 0) : 0.14}
-              placeholder={!ready}
-            />
-          </div>
+        <div className="pane-body pane-body-cloud">
+          {ready && previewUrl ? (
+            // The real 3D viewer — loads the PLY the worker uploaded to R2.
+            // Renders with OrbitControls so the user can zoom (wheel),
+            // rotate (drag), and pan (right-click drag / two-finger).
+            <div style={{ position: "absolute", inset: 0 }}>
+              <PointCloudViewer url={previewUrl} />
+            </div>
+          ) : (
+            // Placeholder until the worker returns. Uses the procedural
+            // canvas so there's something alive on screen during upload.
+            <div style={{ position: "absolute", inset: 0 }}>
+              <PointCloudCanvas
+                density={0.18}
+                depth={1.0}
+                jitter={0.15}
+                pointy={0.5}
+                rotationSpeed={0.14}
+                placeholder
+              />
+            </div>
+          )}
           <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
             <CornerTicks />
             {ready ? (
@@ -746,6 +789,27 @@ function Preview({
             <ProcessingOverlay progress={procProgress} />
           )}
         </div>
+        {photo && (
+          <div className="pane-foot">
+            <div className="stat-grp">
+              <Stat k="points" v={ready ? pts : "—"} />
+              <Stat k="format" v={ready ? "ply · preview" : "—"} />
+            </div>
+            <button
+              className="rail-reset mono"
+              disabled={!ready}
+              style={{ opacity: ready ? 1 : 0.4 }}
+              onClick={() => {
+                // View full-screen by opening the raw signed PLY in a new
+                // tab — handy for debugging and lets users inspect before
+                // they pay to export.
+                if (previewUrl) window.open(previewUrl, "_blank");
+              }}
+            >
+              open raw ↗
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
