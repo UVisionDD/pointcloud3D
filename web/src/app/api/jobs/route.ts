@@ -10,17 +10,33 @@ import { getEntitlements, hasExportCapacity } from "@/lib/quota";
 const GUEST_USER_ID = "guest";
 const GUEST_USER_EMAIL = "guest@pointcloud3d.local";
 
-function errorDetail(e: unknown): string {
+function errorDetail(e: unknown, depth = 0): string {
+  if (depth > 3) return "[max depth]";
   if (e instanceof Error) {
-    // Postgres errors from the `postgres` driver carry useful fields on top of
-    // the message (code, detail, column). Include them so the client sees
-    // something actionable instead of a generic 500.
-    const pg = e as Error & { code?: string; detail?: string; column?: string; constraint?: string };
-    const bits = [e.message];
+    // Drizzle's DrizzleQueryError puts the real postgres error on `.cause`,
+    // and postgres.js's PostgresError carries code/detail/column/constraint
+    // directly on itself. Walk the chain so we actually see *why* the insert
+    // failed instead of a generic "Failed query: ..." prefix.
+    const pg = e as Error & {
+      code?: string;
+      detail?: string;
+      column?: string;
+      constraint?: string;
+      table?: string;
+      cause?: unknown;
+    };
+    // Grab the first line of the outer message only — the query dump Drizzle
+    // includes is huge and the important part is the driver's message.
+    const firstLine = (e.message || "").split("\n")[0].slice(0, 240);
+    const bits = [`${e.constructor.name}: ${firstLine}`];
     if (pg.code) bits.push(`code=${pg.code}`);
     if (pg.detail) bits.push(`detail=${pg.detail}`);
     if (pg.column) bits.push(`column=${pg.column}`);
+    if (pg.table) bits.push(`table=${pg.table}`);
     if (pg.constraint) bits.push(`constraint=${pg.constraint}`);
+    if (pg.cause && pg.cause !== e) {
+      bits.push(`cause -> ${errorDetail(pg.cause, depth + 1)}`);
+    }
     return bits.join(" | ");
   }
   return String(e);
