@@ -177,11 +177,16 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       const contentType =
         file.type === "image/png" ? "image/png" :
         file.type === "image/bmp" ? "image/bmp" : "image/jpeg";
-      const presign = await fetch("/api/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType, sizeBytes: file.size }),
-      });
+      let presign: Response;
+      try {
+        presign = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType, sizeBytes: file.size }),
+        });
+      } catch (e) {
+        throw new Error(`Couldn't reach /api/upload-url (${e instanceof Error ? e.message : "network error"})`);
+      }
       if (!presign.ok) {
         const msg = await presign.json().then((b) => b?.error).catch(() => null);
         throw new Error(typeof msg === "string" ? msg : `upload-url failed (${presign.status})`);
@@ -189,8 +194,17 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       const { uploadUrl, key } = (await presign.json()) as { uploadUrl: string; key: string; jobId: string };
 
       setProcProgress(10);
-      const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
-      if (!put.ok) throw new Error("upload failed");
+      let put: Response;
+      try {
+        put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
+      } catch (e) {
+        // Classic CORS failure on the presigned R2 URL shows up here as
+        // "Failed to fetch". The bucket's CORS policy must allow this origin.
+        throw new Error(
+          `Upload to R2 blocked — check the bucket CORS policy allows ${typeof window !== "undefined" ? window.location.origin : "this origin"} (${e instanceof Error ? e.message : "network error"})`,
+        );
+      }
+      if (!put.ok) throw new Error(`R2 PUT rejected (${put.status})`);
       setProcProgress(25);
 
       const opts = {
@@ -212,11 +226,16 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         seed: 42,
       };
 
-      const job = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ inputKey: key, options: opts }),
-      });
+      let job: Response;
+      try {
+        job = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inputKey: key, options: opts }),
+        });
+      } catch (e) {
+        throw new Error(`Couldn't reach /api/jobs (${e instanceof Error ? e.message : "network error"})`);
+      }
       if (!job.ok) {
         const msg = await job.json().then((b) => b?.error).catch(() => null);
         throw new Error(typeof msg === "string" ? msg : `job create failed (${job.status})`);

@@ -70,11 +70,18 @@ cp worker/.env.example worker/.env
    - `R2_BUCKET=pointcloud3d`
    Paste all four into both `web/.env.local` and `worker/.env`.
 3. **CORS** for the bucket (Settings → CORS policy) — needed so browser uploads
-   to presigned PUT URLs work:
+   to presigned PUT URLs work. Include every origin the app is served from —
+   the apex redirects to `www.`, and Vercel preview deployments have their own
+   hostnames. Missing any of these causes "Failed to fetch" on upload:
    ```json
    [
      {
-       "AllowedOrigins": ["http://localhost:3000", "https://pointcloud3d.com"],
+       "AllowedOrigins": [
+         "http://localhost:3000",
+         "https://pointcloud3d.com",
+         "https://www.pointcloud3d.com",
+         "https://*.vercel.app"
+       ],
        "AllowedMethods": ["GET", "PUT", "HEAD"],
        "AllowedHeaders": ["*"],
        "ExposeHeaders": ["ETag"],
