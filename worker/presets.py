@@ -13,68 +13,70 @@ from pointcloud import CrystalParams
 
 # ---------- Content presets (subject type) ----------
 
-# All presets were re-tuned to target ~500k–1.5M points and tighter Z so the
-# crystal doesn't look stretched on its long axis. Density was previously too
-# conservative (0.22–0.32) which — combined with hard bg-removal zeroing out
-# 60%+ of pixels — dropped the real output to <20k points on portraits.
+# Presets target ~1.5M–3M points with shallow Z so portraits actually look
+# like portraits instead of stretched totems. Densities are effectively
+# maxed out — we'd rather the worker produce a dense cloud and let the
+# laser software (or the user's slider) cull down, than have to re-queue
+# a job because the result was too sparse.
 CONTENT_PRESETS: dict[str, CrystalParams] = {
-    # More face-detail bias, tighter Z range, higher contrast on skin tones.
-    # Target ~800k–1.2M points.
+    # Faces are small — packing >1M points into the face region needs
+    # max density + lots of layers. Z stays very shallow (0.22) so the
+    # nose and forehead don't protrude into the crystal's upper half.
     "portrait": CrystalParams(
-        base_density=0.85,
-        max_points_per_pixel=10,
+        base_density=1.0,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=5,
-        volumetric_thickness=0.06,
-        z_scale=0.38,
+        z_layers=6,
+        volumetric_thickness=0.05,
+        z_scale=0.22,
         contrast=1.15,
         gamma=0.95,
         depth_gamma=0.85,
     ),
-    # Pets are furrier so higher density; z_scale slightly more forward.
+    # Pets are furrier — bump jitter a hair so fur doesn't look banded.
     "pet": CrystalParams(
-        base_density=0.9,
-        max_points_per_pixel=10,
+        base_density=1.0,
+        max_points_per_pixel=15,
         xy_jitter=0.55,
-        z_layers=5,
-        volumetric_thickness=0.08,
-        z_scale=0.45,
+        z_layers=6,
+        volumetric_thickness=0.07,
+        z_scale=0.28,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.9,
     ),
-    # Landscapes use the full Z range — horizon depth is the point.
+    # Landscapes want more Z spread — horizon depth is the whole selling point.
     "landscape": CrystalParams(
-        base_density=0.95,
-        max_points_per_pixel=10,
+        base_density=1.0,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=6,
-        volumetric_thickness=0.12,
-        z_scale=0.7,
+        z_layers=7,
+        volumetric_thickness=0.10,
+        z_scale=0.55,
         contrast=1.05,
         gamma=1.0,
         depth_gamma=1.0,
     ),
     # Objects usually have dark background, effective lum lower — compensate.
     "object": CrystalParams(
-        base_density=0.85,
-        max_points_per_pixel=10,
+        base_density=1.0,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=5,
-        volumetric_thickness=0.08,
-        z_scale=0.48,
+        z_layers=6,
+        volumetric_thickness=0.07,
+        z_scale=0.3,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.95,
     ),
-    # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z.
+    # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z hard.
     "text_logo": CrystalParams(
-        base_density=0.9,
-        max_points_per_pixel=10,
+        base_density=1.0,
+        max_points_per_pixel=15,
         xy_jitter=0.3,
-        z_layers=4,
-        volumetric_thickness=0.04,
-        z_scale=0.28,
+        z_layers=5,
+        volumetric_thickness=0.03,
+        z_scale=0.18,
         contrast=1.5,
         gamma=0.85,
         depth_gamma=1.2,

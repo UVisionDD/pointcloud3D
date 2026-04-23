@@ -36,25 +36,31 @@ class CrystalParams:
 
     # Density / distribution.
     # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    # Bumped to 0.8 so a typical portrait-after-bg-removal lands north of
-    # 500k points — the lower number left us at ~10k on tight subjects.
-    base_density: float = 0.8
+    # Pushed to 1.0 — the previous 0.8 was still producing thin clouds on
+    # dark-skinned portraits or low-contrast shots where luminance averages
+    # ~0.35 (so per-pixel prob capped out at ~0.28 even before falloff).
+    base_density: float = 1.0
     # Max number of points a single pixel can emit across all Z layers.
-    max_points_per_pixel: int = 10
+    max_points_per_pixel: int = 15
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
     # Number of Z layers to sample (volumetric thickness in Z).
-    z_layers: int = 5
+    z_layers: int = 6
     # Cap the longest source image dimension before depth + sampling, so the
-    # output point count is predictable. 2000 px ≈ 3 MP, target ~1.5 M points
+    # output point count is predictable. 2500 px ≈ 6 MP, target ~2 M points
     # for a typical portrait. Set 0 to disable the cap entirely.
-    sampling_max_side_px: int = 2000
+    sampling_max_side_px: int = 2500
+    # How much later Z layers fall off relative to the main surface layer.
+    # 0.2 means the last layer still emits 80% as many points — prevents
+    # the volumetric shell from looking hollow. Previously was 0.5 which
+    # collectively halved the total cloud size.
+    layer_falloff: float = 0.2
     # Volumetric thickness around the depth surface (fraction of size_z, 0..1).
     volumetric_thickness: float = 0.08
     # Z scale: 0..1. Scales how much of crystal depth the shape occupies.
-    # 0.45 keeps portraits from looking stretched down the crystal's long
-    # axis — at 0.85 the nose sticks out of the block.
-    z_scale: float = 0.45
+    # 0.25 keeps portraits visibly flat on an 80mm-long crystal. Landscape
+    # presets override this upward because horizon depth is the point.
+    z_scale: float = 0.25
 
     # Tonemap knobs on the source image (applied before density sampling).
     brightness: float = 0.0    # -1..1 additive
@@ -182,8 +188,13 @@ def generate_points(
         layer_p = density * params.base_density
         # Each additional layer is slightly less dense, roughly modeling the
         # taper of the volumetric shell around the main depth surface.
-        layer_falloff = 1.0 if layers == 1 else 1.0 - 0.5 * (layer_idx / (layers - 1))
-        layer_p = layer_p * layer_falloff * (params.max_points_per_pixel / layers)
+        # `layer_falloff` is the *total* drop from layer 0 to layer N-1:
+        # e.g. 0.2 means the last layer still fires at 80% of the first.
+        falloff = (
+            1.0 if layers == 1
+            else 1.0 - params.layer_falloff * (layer_idx / (layers - 1))
+        )
+        layer_p = layer_p * falloff * (params.max_points_per_pixel / layers)
         layer_p = np.clip(layer_p, 0.0, 1.0)
 
         mask = rng.random((h, w)) < layer_p

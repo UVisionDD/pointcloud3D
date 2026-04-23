@@ -28,12 +28,17 @@ interface Params {
   invert: boolean;
 }
 
+// UI slider defaults per preset. `density` is 0..1 (maps straight to
+// worker base_density). `depth` is 0..2.5 where 1.0 = "normal"; worker
+// z_scale = 0.25 * depth so 1.0 → 0.25 (portrait-shallow), 2.2 → 0.55
+// (landscape-wide). Keep these near the max so the first render looks
+// rich — the user can tone it down from the top.
 const PRESET_PARAMS: Record<PresetKey, Pick<Params, "density" | "depth" | "jitter" | "pointy">> = {
-  portrait: { density: 0.55, depth: 1.0, jitter: 0.3, pointy: 0.6 },
-  pet: { density: 0.7, depth: 1.05, jitter: 0.35, pointy: 0.7 },
-  landscape: { density: 0.85, depth: 0.8, jitter: 0.25, pointy: 0.4 },
-  object: { density: 0.5, depth: 1.15, jitter: 0.18, pointy: 0.8 },
-  logo: { density: 0.35, depth: 1.2, jitter: 0.1, pointy: 0.9 },
+  portrait:  { density: 0.95, depth: 0.9, jitter: 0.5, pointy: 0.6 },
+  pet:       { density: 1.0,  depth: 1.1, jitter: 0.55, pointy: 0.7 },
+  landscape: { density: 1.0,  depth: 2.2, jitter: 0.5, pointy: 0.4 },
+  object:    { density: 0.95, depth: 1.2, jitter: 0.5, pointy: 0.8 },
+  logo:      { density: 1.0,  depth: 0.7, jitter: 0.3, pointy: 0.9 },
 };
 
 const PRESET_TO_SERVER: Record<PresetKey, "portrait" | "pet" | "landscape" | "object" | "text_logo"> = {
@@ -84,8 +89,8 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [preset, setPreset] = useState<PresetKey>("portrait");
   const [laser, setLaser] = useState<LaserKey>("xtool");
   const [params, setParams] = useState<Params>({
-    density: 0.55, depth: 1.0, jitter: 0.3, pointy: 0.6, auto: true,
-    brightness: 0, contrast: 1, gamma: 1, zlayers: 60, marginX: 3, marginY: 3, invert: false,
+    density: 0.95, depth: 0.9, jitter: 0.5, pointy: 0.6, auto: true,
+    brightness: 0, contrast: 1, gamma: 1, zlayers: 90, marginX: 3, marginY: 3, invert: false,
   });
   const [lines, setLines] = useState<string[]>(["", "", ""]);
   const [bgRemoved, setBgRemoved] = useState(true);
@@ -102,6 +107,11 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   // URL of the result PLY the 3D viewer loads once the worker finishes.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [pointCount, setPointCount] = useState<number | null>(null);
+  // True while a retune child job is in flight. Deliberately separate from
+  // procStage so the currently-rendered cloud stays on screen — swapping to
+  // the placeholder on every slider tick was the "reloads the whole thing"
+  // bug the user was complaining about.
+  const [retuning, setRetuning] = useState(false);
   // Debounce handle for slider-driven retunes.
   const retuneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Prevents the "params changed → retune" effect from firing on the very
@@ -140,8 +150,18 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   }, [procStage]);
 
   // Poll job status.
+  //
+  // Two flavours:
+  //  - Initial upload: procStage is "processing", we drive the big overlay
+  //    + progress bar and only flip to "ready" once the PLY lands.
+  //  - Retune: procStage stays "ready", the cloud on screen stays on
+  //    screen, we just swap `previewUrl` when the new PLY is available.
+  //    Poll fast (500ms) because retune rounds back in well under a second.
   useEffect(() => {
-    if (!jobId || procStage !== "processing") return;
+    if (!jobId) return;
+    const isRetune = retuning;
+    if (!isRetune && procStage !== "processing") return;
+
     let cancelled = false;
     const poll = async () => {
       try {
@@ -160,29 +180,41 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         };
         const job = body.job;
         if (cancelled || !job) return;
-        // Prefer the worker's reported progress (0..1) once it exceeds the
-        // fake client progress. Keeps the bar from going backwards.
-        if (typeof job.progress === "number") {
+
+        // Only drive the progress bar for the initial upload — retune
+        // shouldn't touch the progress indicator at all.
+        if (!isRetune && typeof job.progress === "number") {
           const real = Math.round(job.progress * 100);
           setProcProgress((prev) => (real > prev ? Math.min(real, 99) : prev));
         }
+
         if (job.status === "done") {
-          setProcProgress(100);
           if (body.previewUrl) setPreviewUrl(body.previewUrl);
           if (job.timingsMs && typeof job.timingsMs.points_count === "number") {
             setPointCount(job.timingsMs.points_count);
           }
-          setTimeout(() => setProcStage("ready"), 250);
+          if (isRetune) {
+            setRetuning(false);
+          } else {
+            setProcProgress(100);
+            setTimeout(() => setProcStage("ready"), 250);
+          }
         } else if (job.status === "failed") {
-          setProcStage("error");
-          toast.error(job.error || "Processing failed. Try a different photo.");
+          if (isRetune) {
+            // Retune failure is quiet — keep the old cloud, log, move on.
+            setRetuning(false);
+            console.warn("[retune] failed:", job.error);
+          } else {
+            setProcStage("error");
+            toast.error(job.error || "Processing failed. Try a different photo.");
+          }
         }
       } catch {}
     };
-    const interval = setInterval(poll, 2500);
+    const interval = setInterval(poll, isRetune ? 500 : 2500);
     poll();
     return () => { cancelled = true; clearInterval(interval); };
-  }, [jobId, procStage]);
+  }, [jobId, procStage, retuning]);
 
   const onReset = () => {
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
@@ -208,12 +240,13 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
    * the sampler only wants 3..8.
    */
   const buildJobOptions = useCallback(() => {
-    // Clamp z_scale in [0.1, 1.0] — below 0.1 the crystal looks flat, above 1
-    // the subject's nose sticks out of the block.
-    const zScale = Math.max(0.1, Math.min(1.0, 0.45 * params.depth));
-    // Map the 20..120 UI slider to 3..8 real Bernoulli layers. More layers
-    // cost more points but smooth the z banding.
-    const zLayers = Math.max(3, Math.min(8, Math.round(params.zlayers / 15)));
+    // Clamp z_scale in [0.05, 1.0]. The 0.25 coefficient is chosen so
+    // params.depth=1.0 → zScale=0.25 (shallow-portrait target); a landscape
+    // slider at 2.2 → zScale=0.55 which is dramatic without clipping.
+    const zScale = Math.max(0.05, Math.min(1.0, 0.25 * params.depth));
+    // Map the 20..120 UI slider to 4..9 real Bernoulli layers. More layers
+    // multiply point count linearly but smooth z banding.
+    const zLayers = Math.max(4, Math.min(9, Math.round(params.zlayers / 13)));
     // "Sharpness" slider — pointier = smaller tet on STL. Inverse mapping so
     // pointy=1 gives the crispest stipple, pointy=0 gives a softer look.
     const pointSizeMm = Math.max(0.04, 0.12 - 0.08 * params.pointy);
@@ -232,10 +265,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       margin_y: params.marginY,
       margin_z: 3,
       base_density: Math.max(0.05, Math.min(1.0, params.density)),
-      max_points_per_pixel: 10,
+      max_points_per_pixel: 15,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
       z_layers: zLayers,
-      sampling_max_side_px: 2000,
+      sampling_max_side_px: 2500,
       volumetric_thickness: 0.08,
       z_scale: zScale,
       brightness: params.brightness,
@@ -275,11 +308,11 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         return;
       }
       const { jobId: childId } = (await r.json()) as { jobId: string };
+      // Deliberately do NOT set procStage — the main viewer stays on the
+      // previous cloud, and we only flip a small "updating…" badge on.
+      // This is what makes slider drags feel live instead of "re-loading".
+      setRetuning(true);
       setJobId(childId);
-      // Don't clear previewUrl — keep showing the stale cloud until the new
-      // one lands. That looks less jarring than a blank canvas.
-      setProcProgress(60);
-      setProcStage("processing");
     } catch {
       // network errors during retune are silent — we still have the old cloud.
     }
@@ -453,6 +486,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             onReset={onReset}
             previewUrl={previewUrl}
             pointCount={pointCount}
+            retuning={retuning}
           />
           <ExportBar
             selectedFormat={selectedFormat}
@@ -600,7 +634,7 @@ function SettingsRail({
       <Collapse title="More settings">
         <Slider
           label="3D depth" value={params.depth} set={(v) => sp("depth", v)}
-          min={0.4} max={1.3}
+          min={0} max={2.5}
           hint="How strong the 3D effect appears in the crystal"
         />
         <Slider
@@ -763,7 +797,7 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 // ---------- Preview (source + cloud panes) ----------
 function Preview({
   procStage, params, lines, photo, bgRemoved, procProgress, onFile, onReset,
-  previewUrl, pointCount,
+  previewUrl, pointCount, retuning,
 }: {
   procStage: "idle" | "uploading" | "processing" | "ready" | "error";
   params: Params;
@@ -775,6 +809,7 @@ function Preview({
   onReset: () => void;
   previewUrl: string | null;
   pointCount: number | null;
+  retuning: boolean;
 }) {
   const [srcView, setSrcView] = useState<"photo" | "depth">("photo");
   const ready = procStage === "ready";
@@ -835,8 +870,17 @@ function Preview({
               {ready ? `~/jobs/${fname}` : "point cloud preview"}
             </span>
           </div>
-          <span className="mono muted" style={{ fontSize: 10 }}>
-            {ready ? "drag · zoom · pan" : !photo ? "awaiting photo" : "processing…"}
+          <span
+            className="mono muted"
+            style={{ fontSize: 10, color: retuning ? "var(--accent)" : undefined }}
+          >
+            {retuning
+              ? "updating…"
+              : ready
+                ? "drag · zoom · pan"
+                : !photo
+                  ? "awaiting photo"
+                  : "processing…"}
           </span>
         </div>
         <div className="pane-body pane-body-cloud">

@@ -59,33 +59,45 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
     if isinstance(opts_raw, str):
         opts_raw = json.loads(opts_raw)
 
-    # Fallbacks here match the CrystalParams dataclass defaults so a job
-    # row that omits a field doesn't accidentally downgrade to old values.
-    crystal = CrystalParams(
-        size_x=opts_raw.get("size_x", 50.0),
-        size_y=opts_raw.get("size_y", 50.0),
-        size_z=opts_raw.get("size_z", 80.0),
-        margin_x=opts_raw.get("margin_x", 3.0),
-        margin_y=opts_raw.get("margin_y", 3.0),
-        margin_z=opts_raw.get("margin_z", 3.0),
-        base_density=opts_raw.get("base_density", 0.8),
-        max_points_per_pixel=opts_raw.get("max_points_per_pixel", 10),
-        xy_jitter=opts_raw.get("xy_jitter", 0.5),
-        z_layers=opts_raw.get("z_layers", 5),
-        sampling_max_side_px=opts_raw.get("sampling_max_side_px", 2000),
-        volumetric_thickness=opts_raw.get("volumetric_thickness", 0.08),
-        z_scale=opts_raw.get("z_scale", 0.45),
-        brightness=opts_raw.get("brightness", 0.0),
-        contrast=opts_raw.get("contrast", 1.0),
-        gamma=opts_raw.get("gamma", 1.0),
-        invert_depth=opts_raw.get("invert_depth", True),
-        depth_gamma=opts_raw.get("depth_gamma", 1.0),
-        intensity_gamma=opts_raw.get("intensity_gamma", 1.0),
-        intensity_floor=opts_raw.get("intensity_floor", 0.12),
-        seed=opts_raw.get("seed", 42),
-    )
+    # Apply the content preset FIRST to get a sensible base, THEN let
+    # explicit client fields override it. The old order applied the preset
+    # last and clobbered the density/z_scale sliders completely — the
+    # retune endpoint looked broken because every slider change resulted
+    # in an identical preset-forced cloud.
+    crystal = CrystalParams()
     if opts_raw.get("content_preset"):
         crystal = apply_content_preset(crystal, opts_raw["content_preset"])
+
+    def pick(k: str, fallback):
+        v = opts_raw.get(k)
+        return fallback if v is None else v
+
+    from dataclasses import replace as _replace
+    crystal = _replace(
+        crystal,
+        size_x=pick("size_x", crystal.size_x),
+        size_y=pick("size_y", crystal.size_y),
+        size_z=pick("size_z", crystal.size_z),
+        margin_x=pick("margin_x", crystal.margin_x),
+        margin_y=pick("margin_y", crystal.margin_y),
+        margin_z=pick("margin_z", crystal.margin_z),
+        base_density=pick("base_density", crystal.base_density),
+        max_points_per_pixel=pick("max_points_per_pixel", crystal.max_points_per_pixel),
+        xy_jitter=pick("xy_jitter", crystal.xy_jitter),
+        z_layers=pick("z_layers", crystal.z_layers),
+        sampling_max_side_px=pick("sampling_max_side_px", crystal.sampling_max_side_px),
+        volumetric_thickness=pick("volumetric_thickness", crystal.volumetric_thickness),
+        z_scale=pick("z_scale", crystal.z_scale),
+        brightness=pick("brightness", crystal.brightness),
+        contrast=pick("contrast", crystal.contrast),
+        gamma=pick("gamma", crystal.gamma),
+        invert_depth=pick("invert_depth", crystal.invert_depth),
+        depth_gamma=pick("depth_gamma", crystal.depth_gamma),
+        intensity_gamma=pick("intensity_gamma", crystal.intensity_gamma),
+        intensity_floor=pick("intensity_floor", crystal.intensity_floor),
+        layer_falloff=pick("layer_falloff", crystal.layer_falloff),
+        seed=pick("seed", crystal.seed),
+    )
     if opts_raw.get("laser_preset"):
         crystal = apply_laser_preset(crystal, opts_raw["laser_preset"])
 
