@@ -52,6 +52,12 @@ export const jobOptionsSchema = z.object({
   // /api/jobs/[id]/retune to drive live slider changes.
   reuse_depth_from_job: z.string().uuid().optional(),
 
+  // BG-preview fast-path: if set, the worker runs ONLY bg-removal on the
+  // input and uploads a PNG preview (`bg_preview.png`). No depth model, no
+  // sampling, no exports. Used to give the user a bg-removed view of their
+  // photo in step 2 of the UI before they commit to generating the cloud.
+  preview_only: z.boolean().optional(),
+
   // STL point size (mm).
   point_size_mm: z.number().min(0.01).max(1).default(0.08),
 

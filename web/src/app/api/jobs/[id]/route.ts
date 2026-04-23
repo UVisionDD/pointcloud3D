@@ -45,6 +45,10 @@ export async function GET(
   // on auth + entitlements, and always will.
   let previewUrl: string | null = null;
   let previewFormat: string | null = null;
+  // Background-removal PNG preview, produced by preview_only fast-path jobs.
+  // Surfaced separately so the UI can swap it into the source pane without
+  // mistaking it for the point-cloud preview.
+  let bgPreviewUrl: string | null = null;
   if (row.status === "done" && row.resultKeys) {
     const keys = row.resultKeys as Record<string, string>;
     for (const fmt of PREVIEW_FORMAT_PRIORITY) {
@@ -61,7 +65,17 @@ export async function GET(
         break;
       }
     }
+    if (keys.bg_preview) {
+      try {
+        bgPreviewUrl = await presignedDownload({
+          key: keys.bg_preview,
+          expiresIn: 60 * 60,
+        });
+      } catch {
+        bgPreviewUrl = null;
+      }
+    }
   }
 
-  return NextResponse.json({ job: row, previewUrl, previewFormat });
+  return NextResponse.json({ job: row, previewUrl, previewFormat, bgPreviewUrl });
 }

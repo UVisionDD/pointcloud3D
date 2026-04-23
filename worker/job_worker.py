@@ -150,6 +150,51 @@ def process_job(job: dict) -> None:
     if isinstance(opts_raw, str):
         opts_raw = json.loads(opts_raw)
 
+    # BG-preview fast-path: the web UI fires a throwaway job with
+    # preview_only=True when the user toggles "Remove background" so they can
+    # see the matte before committing to a full cloud generation. Skip depth,
+    # sampling, and exports entirely — just run bg-removal and upload a PNG.
+    if bool(opts_raw.get("preview_only")):
+        with tempfile.TemporaryDirectory(prefix=f"preview-{job_id}-") as td:
+            workdir = Path(td)
+            src = workdir / f"input.{ext}"
+            download_to_path(input_key, src)
+
+            db.set_progress(job_id, 0.3)
+
+            import numpy as np  # local import — keeps startup lean
+            from PIL import Image
+
+            img = Image.open(src).convert("RGB")
+            img_arr = np.array(img)
+
+            if bool(opts_raw.get("remove_bg", True)):
+                from bg_remove import remove_background
+                result_arr, _alpha = remove_background(img_arr)
+            else:
+                result_arr = img_arr
+
+            db.set_progress(job_id, 0.8)
+
+            # Downscale to max 1400px on the longest side — the UI only needs
+            # a preview, and smaller PNGs round-trip faster through R2.
+            max_side = 1400
+            h, w = result_arr.shape[:2]
+            if max(h, w) > max_side:
+                scale = max_side / max(h, w)
+                pil = Image.fromarray(result_arr).resize(
+                    (int(w * scale), int(h * scale)), Image.LANCZOS
+                )
+                result_arr = np.array(pil)
+
+            out = workdir / "bg_preview.png"
+            Image.fromarray(result_arr).save(out, format="PNG", optimize=True)
+
+            key = f"exports/{user_id}/{job_id}/bg_preview.png"
+            upload_file(key, out, "image/png")
+            db.mark_done(job_id, {"bg_preview": key}, {"preview_only": 1})
+            return
+
     with tempfile.TemporaryDirectory(prefix=f"job-{job_id}-") as td:
         workdir = Path(td)
 

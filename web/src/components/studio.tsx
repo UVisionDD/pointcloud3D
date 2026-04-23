@@ -119,6 +119,14 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [crystalKey, setCrystalKey] = useState<CrystalKey>("k9_50_50_80");
   const [lines, setLines] = useState<string[]>(["", "", ""]);
   const [bgRemoved, setBgRemoved] = useState(true);
+  // BG-preview fast-path state. When the user is on step 2 with bg-remove
+  // on, we fire a throwaway `preview_only: true` job that produces a PNG
+  // matte and render it in the source pane. `firedForKeyRef` prevents
+  // re-queuing if the user toggles OFF then ON again (or if the job fails).
+  const [bgPreviewUrl, setBgPreviewUrl] = useState<string | null>(null);
+  const [bgPreviewJobId, setBgPreviewJobId] = useState<string | null>(null);
+  const [bgPreviewLoading, setBgPreviewLoading] = useState(false);
+  const bgPreviewFiredForKeyRef = useRef<string | null>(null);
   const [photo, setPhoto] = useState<{ name: string; size: number; previewUrl: string; file: File } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   // Parent job id — the *first* full-inference job for this photo, whose
@@ -269,6 +277,12 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     setProcProgress(0);
     setPreviewUrl(null);
     setPointCount(null);
+    // Bg-preview cache is keyed on uploadedKey, so clearing both ensures
+    // the next upload triggers a fresh matting job.
+    setBgPreviewUrl(null);
+    setBgPreviewJobId(null);
+    setBgPreviewLoading(false);
+    bgPreviewFiredForKeyRef.current = null;
   };
 
   /**
@@ -379,6 +393,78 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       if (retuneTimerRef.current) clearTimeout(retuneTimerRef.current);
     };
   }, [parentJobId, params, preset, laser, bgRemoved, lines, selectedFormat, requestRetune]);
+
+  // Step 2: fire a `preview_only: true` job once the upload lands, so the
+  // user sees the bg-removed matte in the source pane without waiting on a
+  // full cloud generation. Gated by a ref that remembers which uploadedKey
+  // we already fired for — that way toggling bg OFF/ON doesn't re-queue,
+  // and a job failure doesn't get retried forever.
+  useEffect(() => {
+    if (stepMode !== "bgremove") return;
+    if (!uploadedKey) return;
+    if (!bgRemoved) return;
+    if (bgPreviewFiredForKeyRef.current === uploadedKey) return;
+    bgPreviewFiredForKeyRef.current = uploadedKey;
+
+    let cancelled = false;
+    setBgPreviewLoading(true);
+    (async () => {
+      try {
+        const r = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inputKey: uploadedKey,
+            // Minimal options — preview_only tells the worker to skip all
+            // depth/sampling/export work and just upload a PNG matte.
+            options: { preview_only: true, remove_bg: true },
+          }),
+        });
+        if (!r.ok) throw new Error(`preview job create failed (${r.status})`);
+        const { jobId: pid } = (await r.json()) as { jobId: string };
+        if (!cancelled) setBgPreviewJobId(pid);
+      } catch (e) {
+        console.warn("[bg-preview] fire failed:", e);
+        if (!cancelled) setBgPreviewLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [stepMode, uploadedKey, bgRemoved]);
+
+  // Poll the preview job until it finishes. Separate from the main poller
+  // above — different job id, different output, shouldn't touch the cloud
+  // progress bar. Fires every 1s (rembg is a ~5-15s round-trip on the Mac
+  // Mini depending on image size and whether U²-Net is warm).
+  useEffect(() => {
+    if (!bgPreviewJobId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/jobs/${bgPreviewJobId}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const body = (await r.json()) as {
+          job?: { status?: string; error?: string | null };
+          bgPreviewUrl?: string | null;
+        };
+        if (cancelled) return;
+        const job = body.job;
+        if (job?.status === "done") {
+          if (body.bgPreviewUrl) setBgPreviewUrl(body.bgPreviewUrl);
+          setBgPreviewLoading(false);
+          setBgPreviewJobId(null);
+        } else if (job?.status === "failed") {
+          // Matting failure is non-fatal — we just don't show a preview.
+          // The full cloud job can still run (and retry bg removal there).
+          setBgPreviewLoading(false);
+          setBgPreviewJobId(null);
+          console.warn("[bg-preview] job failed:", job.error);
+        }
+      } catch {}
+    };
+    const interval = setInterval(poll, 1000);
+    poll();
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [bgPreviewJobId]);
 
   const handleLaserChange = (next: LaserKey) => {
     setLaser(next);
@@ -562,7 +648,8 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             lines={lines}
             photo={photo}
             bgRemoved={bgRemoved}
-            setBgRemoved={setBgRemoved}
+            bgPreviewUrl={bgPreviewUrl}
+            bgPreviewLoading={bgPreviewLoading}
             procProgress={procProgress}
             onFile={handleFile}
             onReset={onReset}
@@ -721,6 +808,16 @@ function SettingsRail({
           hint="More points = sharper result, longer engraving time"
           display={(v) => formatPts(300000 + v * 2200000)}
         />
+
+        {/* Bg-remove is step 2's key decision, so it lives here — NOT in
+            More settings. Flipping it on during step 2 auto-fires a PNG
+            matting job on the server and drops the result into the source
+            pane. Flipping off reverts to the original photo instantly. */}
+        <div className="sub-label" style={{ marginTop: 6 }}>Background</div>
+        <Toggle label="Remove background" value={bgRemoved} set={setBgRemoved} />
+        <div className="s-hint" style={{ marginTop: 2 }}>
+          Leave on for portraits & pets. Off keeps the scene as-is.
+        </div>
       </div>
 
       <Collapse title="More settings">
@@ -793,7 +890,6 @@ function SettingsRail({
         <div className="sub-label">Options</div>
         <div className="toggles">
           <Toggle label="Auto-rotate preview" value={params.auto}   set={(v) => sp("auto",   v)} />
-          <Toggle label="Background removed"  value={bgRemoved}     set={setBgRemoved} />
           <Toggle label="Invert depth"        value={params.invert} set={(v) => sp("invert", v)} />
         </div>
       </Collapse>
@@ -923,16 +1019,17 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 
 // ---------- Preview (source + cloud panes) ----------
 function Preview({
-  stepMode, params, lines, photo, bgRemoved, setBgRemoved, procProgress,
-  onFile, onReset, onContinueFromBg, onGenerate, uploadedKey, busy,
-  previewUrl, pointCount, retuning, crystal,
+  stepMode, params, lines, photo, bgRemoved, bgPreviewUrl, bgPreviewLoading,
+  procProgress, onFile, onReset, onContinueFromBg, onGenerate, uploadedKey,
+  busy, previewUrl, pointCount, retuning, crystal,
 }: {
   stepMode: "upload" | "bgremove" | "configure" | "processing" | "ready" | "error";
   params: Params;
   lines: string[];
   photo: { name: string; previewUrl: string } | null;
   bgRemoved: boolean;
-  setBgRemoved: (v: boolean) => void;
+  bgPreviewUrl: string | null;
+  bgPreviewLoading: boolean;
   procProgress: number;
   onFile: (f: File) => void;
   onReset: () => void;
@@ -991,7 +1088,12 @@ function Preview({
           {!photo ? (
             <UploadZone onFile={onFile} />
           ) : srcView === "photo" ? (
-            <PhotoView photo={photo} bgRemoved={bgRemoved} />
+            <PhotoView
+              photo={photo}
+              bgRemoved={bgRemoved}
+              bgPreviewUrl={bgPreviewUrl}
+              bgPreviewLoading={bgPreviewLoading}
+            />
           ) : (
             <DepthView />
           )}
@@ -1003,7 +1105,13 @@ function Preview({
               <Stat k="status" v={
                 stepMode === "ready" ? "ready" :
                 stepMode === "error" ? "error" :
-                stepMode === "bgremove" ? (uploadedKey ? "ready · step 2" : "uploading…") :
+                stepMode === "bgremove"
+                  ? (!uploadedKey
+                      ? "uploading…"
+                      : bgPreviewLoading
+                        ? "matting…"
+                        : "ready · step 2")
+                  :
                 stepMode === "configure" ? "configure · step 3" :
                 stepMode === "processing" ? "processing…" : "—"
               } />
@@ -1106,9 +1214,10 @@ function Preview({
             )}
           </div>
           {stepMode === "bgremove" && (
-            <BgRemoveStep
+            <BgStepDock
               bgRemoved={bgRemoved}
-              setBgRemoved={setBgRemoved}
+              bgPreviewLoading={bgPreviewLoading}
+              bgHasPreview={!!bgPreviewUrl}
               uploading={!uploadedKey}
               onContinue={onContinueFromBg}
             />
@@ -1192,13 +1301,56 @@ function UploadZone({ onFile }: { onFile: (f: File) => void }) {
   );
 }
 
-function PhotoView({ photo, bgRemoved }: { photo: { previewUrl: string }; bgRemoved: boolean }) {
+function PhotoView({
+  photo, bgRemoved, bgPreviewUrl, bgPreviewLoading,
+}: {
+  photo: { previewUrl: string };
+  bgRemoved: boolean;
+  bgPreviewUrl: string | null;
+  bgPreviewLoading: boolean;
+}) {
+  // If the user has bg-remove on AND we've got a server-rendered matte, show
+  // it. Otherwise fall back to the original object-URL — gives a snappy
+  // first render and a graceful path when matting fails or is toggled off.
+  const showMatte = bgRemoved && !!bgPreviewUrl;
+  const src = showMatte ? (bgPreviewUrl as string) : photo.previewUrl;
+  // The matte comes out on black; the raw photo stays on the warm bg we've
+  // been using. Matching the frame colour to the image keeps the seam
+  // invisible and makes the cutout pop.
+  const frameBg = showMatte ? "#000" : "#1a1612";
   return (
     <div className="src-view">
-      <div className="src-frame" style={{ background: bgRemoved ? "#000" : "#1a1612" }}>
+      <div className="src-frame" style={{ background: frameBg, position: "relative" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={photo.previewUrl} alt="source" />
+        <img src={src} alt="source" />
         <CornerTicks />
+        {bgRemoved && !bgPreviewUrl && bgPreviewLoading && (
+          // Loading overlay — U²-Net runs in a few seconds but we still want
+          // to tell the user what's happening so the pane doesn't look stuck.
+          <div
+            style={{
+              position: "absolute", inset: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: "rgba(5, 7, 13, 0.55)",
+              backdropFilter: "blur(2px)",
+              WebkitBackdropFilter: "blur(2px)",
+              color: "white",
+              pointerEvents: "none",
+            }}
+          >
+            <div className="proc-card" style={{ maxWidth: 260, textAlign: "left" }}>
+              <div className="mono muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                rembg · u2net
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>
+                Removing background…
+              </div>
+              <div className="mono" style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>
+                Matting the subject so you can see the cutout before committing.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1224,44 +1376,62 @@ function DepthView() {
 }
 
 /**
- * Step-2 overlay. Blocks interaction with the wireframe underneath — the
- * user makes a bg-remove decision before they can move on. The Continue
- * button is disabled until the R2 upload finishes (usually ~1s), so on a
- * fast connection the user rarely sees the "Uploading photo…" state.
+ * Step-2 bottom dock. Unlike the old modal variant, this card does NOT
+ * block the wireframe above — the user can still rotate/zoom the crystal
+ * while they decide. The actual bg-remove toggle lives in the settings
+ * rail now; this card just gives the user status + the forward action.
+ *
+ * Why the uploading/matting states matter for the button: the "Create
+ * point cloud" action uses the stored `uploadedKey`, so we disable it
+ * until the PUT to R2 finishes. The matte itself is optional — users who
+ * don't want to wait can push straight through to step 3.
  */
-function BgRemoveStep({
-  bgRemoved, setBgRemoved, uploading, onContinue,
+function BgStepDock({
+  bgRemoved, bgPreviewLoading, bgHasPreview, uploading, onContinue,
 }: {
   bgRemoved: boolean;
-  setBgRemoved: (v: boolean) => void;
+  bgPreviewLoading: boolean;
+  bgHasPreview: boolean;
   uploading: boolean;
   onContinue: () => void;
 }) {
+  const heading = uploading
+    ? "Uploading photo…"
+    : !bgRemoved
+      ? "Background kept"
+      : bgPreviewLoading
+        ? "Removing background…"
+        : bgHasPreview
+          ? "Background removed"
+          : "Toggle background in the panel";
+  const sub = uploading
+    ? "Sending your photo to the server. Takes a second or two."
+    : !bgRemoved
+      ? "The full scene goes into the cloud. Flip \"Remove background\" on in the panel to preview the matte."
+      : bgPreviewLoading
+        ? "Running the matting model on your photo. The cutout will appear in the source pane on the left."
+        : bgHasPreview
+          ? "Happy with the cutout? Continue to size your crystal next."
+          : "Flip \"Remove background\" in the panel on the left to preview the cutout.";
+  const btnLabel = uploading ? "Uploading…" : "Create point cloud →";
   return (
     <div
       style={{
-        position: "absolute", inset: 0,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(5, 7, 13, 0.55)",
-        backdropFilter: "blur(4px)",
-        WebkitBackdropFilter: "blur(4px)",
-        pointerEvents: "auto",
+        position: "absolute", left: 0, right: 0, bottom: 16,
+        display: "flex", justifyContent: "center",
+        // Don't block the wireframe — only the card itself catches input.
+        pointerEvents: "none",
       }}
     >
-      <div className="proc-card" style={{ maxWidth: 360, textAlign: "left" }}>
+      <div className="proc-card" style={{ minWidth: 380, pointerEvents: "auto", textAlign: "left" }}>
         <div className="mono muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em" }}>
           step 2 · background
         </div>
-        <div style={{ fontSize: 18, fontWeight: 600, margin: "10px 0 6px" }}>
-          Remove the background?
+        <div style={{ fontSize: 16, fontWeight: 600, margin: "8px 0 4px" }}>
+          {heading}
         </div>
-        <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 14, lineHeight: 1.5 }}>
-          Cuts the subject out with a neural matting model. Keep it ON for
-          portraits and pets, OFF for landscapes or scenes where the
-          background is part of the picture.
-        </div>
-        <div style={{ margin: "6px 0 14px" }}>
-          <Toggle label="Remove background" value={bgRemoved} set={setBgRemoved} />
+        <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 12, lineHeight: 1.5 }}>
+          {sub}
         </div>
         <button
           type="button"
@@ -1270,7 +1440,7 @@ function BgRemoveStep({
           style={{ width: "100%" }}
           onClick={onContinue}
         >
-          {uploading ? "Uploading photo…" : "Continue →"}
+          {btnLabel}
         </button>
       </div>
     </div>
