@@ -42,6 +42,11 @@ class CrystalParams:
     base_density: float = 1.0
     # Max number of points a single pixel can emit across all Z layers.
     max_points_per_pixel: int = 15
+    # Target total point count. When > 0, overrides base_density / mpp /
+    # z_layers clipping with weighted multinomial sampling so output is
+    # ALWAYS ≈ this many points regardless of image size / subject area /
+    # luminance. Set 0 to use the legacy Bernoulli-per-layer path.
+    target_points: int = 1_500_000
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
     # Number of Z layers to sample (volumetric thickness in Z).
@@ -180,9 +185,41 @@ def generate_points(
     vol_thickness_mm = params.volumetric_thickness * inner_z
     z_base = params.margin_z + (inner_z - inner_z * params.z_scale) / 2.0
 
-    # For each layer, draw a Bernoulli mask over pixels with p = density * base.
     layers = max(1, params.z_layers)
     all_points: list[np.ndarray] = []
+
+    # Target-driven sampling: draw exactly target_points pixel indices
+    # weighted by density, then spread them uniformly across layers. This
+    # bypasses per-pixel Bernoulli clipping so output matches target even
+    # on small images or bg-removed portraits where only ~10% of pixels
+    # carry the subject.
+    density_sum = float(density.sum())
+    if params.target_points > 0 and density_sum > 1e-6:
+        target = int(params.target_points)
+        flat_w = density.reshape(-1).astype(np.float64)
+        flat_w /= flat_w.sum()
+        idx = rng.choice(flat_w.size, size=target, replace=True, p=flat_w)
+        ys = (idx // w).astype(np.int64)
+        xs = (idx % w).astype(np.int64)
+
+        jitter_x = (rng.random(target) - 0.5) * params.xy_jitter
+        jitter_y = (rng.random(target) - 0.5) * params.xy_jitter
+        x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
+        y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
+
+        d = depth_norm[ys, xs]
+        z_surface = z_base + d * inner_z * params.z_scale
+        # Layer assignment: pick a layer per point then offset within its slab.
+        layer_of_pt = rng.integers(0, layers, size=target)
+        layer_span = vol_thickness_mm / max(1, layers)
+        layer_center = (layer_of_pt - (layers - 1) / 2.0) * layer_span
+        z_offset = layer_center + (rng.random(target) - 0.5) * layer_span
+        z_mm = z_surface + z_offset
+
+        inten = intensity_map[ys, xs]
+        pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
+        print(f"[pointcloud] target sampling: emitted {target} points")
+        return pts
 
     for layer_idx in range(layers):
         layer_p = density * params.base_density

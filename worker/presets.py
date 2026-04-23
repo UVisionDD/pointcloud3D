@@ -23,6 +23,7 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # max density + lots of layers. Z stays very shallow (0.22) so the
     # nose and forehead don't protrude into the crystal's upper half.
     "portrait": CrystalParams(
+        target_points=1_500_000,
         base_density=1.0,
         max_points_per_pixel=15,
         xy_jitter=0.5,
@@ -35,6 +36,7 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Pets are furrier — bump jitter a hair so fur doesn't look banded.
     "pet": CrystalParams(
+        target_points=1_800_000,
         base_density=1.0,
         max_points_per_pixel=15,
         xy_jitter=0.55,
@@ -47,6 +49,7 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Landscapes want more Z spread — horizon depth is the whole selling point.
     "landscape": CrystalParams(
+        target_points=2_000_000,
         base_density=1.0,
         max_points_per_pixel=15,
         xy_jitter=0.5,
@@ -59,6 +62,7 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Objects usually have dark background, effective lum lower — compensate.
     "object": CrystalParams(
+        target_points=1_300_000,
         base_density=1.0,
         max_points_per_pixel=15,
         xy_jitter=0.5,
@@ -71,6 +75,7 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z hard.
     "text_logo": CrystalParams(
+        target_points=800_000,
         base_density=1.0,
         max_points_per_pixel=15,
         xy_jitter=0.3,
@@ -146,6 +151,7 @@ def apply_content_preset(base: CrystalParams, preset_key: str) -> CrystalParams:
     p = CONTENT_PRESETS[preset_key]
     return replace(
         base,
+        target_points=p.target_points,
         base_density=p.base_density,
         max_points_per_pixel=p.max_points_per_pixel,
         xy_jitter=p.xy_jitter,

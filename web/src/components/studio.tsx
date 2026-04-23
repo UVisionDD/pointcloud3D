@@ -322,6 +322,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       margin_z: params.marginZ,
       base_density: Math.max(0.05, Math.min(1.0, params.density)),
       max_points_per_pixel: 15,
+      target_points: Math.round(300000 + params.density * 2200000),
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
       z_layers: zLayers,
       sampling_max_side_px: 2500,
