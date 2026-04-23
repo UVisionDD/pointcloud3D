@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from pipeline import PipelineOptions, load_depth_model, pick_device, run_pipeline
+from pipeline import MODEL_ID, PipelineOptions, load_depth_model, pick_device, run_pipeline
 from pointcloud import CrystalParams
 from presets import apply_content_preset, apply_laser_preset
 
@@ -38,7 +38,9 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "device": str(pick_device()),
-        "model": "Depth-Anything-V2-Small-hf",
+        # Report whichever DAv2 variant pipeline.py is actually loading so
+        # the health endpoint doesn't lie after a model swap.
+        "model": MODEL_ID,
         "worker_id": os.environ.get("WORKER_ID", "local"),
     }
 

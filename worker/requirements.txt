@@ -13,8 +13,10 @@ ezdxf==1.4.3
 # Step-2 optional stages. Unpinned for now; pin after first install on the
 # Mac Mini so everyone runs the same versions.
 mediapipe>=0.10,<0.11          # face detection
-# rembg dropped its bundled onnxruntime in 2.0.60+. Must use an extra.
-rembg[cpu]>=2.0,<3.0           # background removal
+# BiRefNet models landed in rembg 2.0.60; we default to `birefnet-portrait`
+# in bg_remove.py, so keep the floor there. 2.0.60+ also dropped the bundled
+# onnxruntime, which is why we need the [cpu] extra.
+rembg[cpu]>=2.0.60,<3.0        # background removal (BiRefNet + U²-Net)
 
 # Server + queue.
 fastapi>=0.115,<0.119

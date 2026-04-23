@@ -17,7 +17,13 @@ from PIL import Image
 from pointcloud import CrystalParams, generate_points
 from text_overlay import TextOverlayParams, generate_text_points
 
-MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+# Depth-Anything-V2-Large: 335 M params, ~1.3 GB FP32. Needs MPS / CUDA;
+# CPU inference takes tens of seconds. On an M4 Mac Mini (16 GB unified)
+# first load pulls the weights from HF (~650 MB on disk) and runs in the
+# ~1–3 s range per image. Swap to `-Base-hf` or `-Small-hf` if memory is
+# tight or you want faster turnaround; swap to the `-Metric-*` variants
+# if you want absolute depth in meters instead of relative.
+MODEL_ID = "depth-anything/Depth-Anything-V2-Large-hf"
 
 _PROCESSOR = None
 _MODEL = None
@@ -32,7 +38,7 @@ def pick_device() -> torch.device:
 
 
 def load_depth_model(device: torch.device | None = None):
-    """Load (and cache) the DAv2 Small processor + model on the chosen device."""
+    """Load (and cache) the DAv2 Large processor + model on the chosen device."""
     global _PROCESSOR, _MODEL
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
