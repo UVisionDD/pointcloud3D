@@ -23,10 +23,31 @@ interface Params {
   contrast: number;
   gamma: number;
   zlayers: number;
+  // Crystal bounding box (mm). The red wireframe in the 3D preview draws
+  // these exact dimensions; the cloud is scaled to fill (sizeX − 2·marginX,
+  // sizeY − 2·marginY, sizeZ − 2·marginZ) so no point can ever sit outside
+  // the crystal's engravable volume.
+  sizeX: number;
+  sizeY: number;
+  sizeZ: number;
   marginX: number;
   marginY: number;
+  marginZ: number;
   invert: boolean;
 }
+
+// Named crystal sizes (mm). "K9 standard" maps to xTool's 50×50×80 default;
+// everything else covers the common K9 blocks on Amazon / Alibaba. "custom"
+// unlocks the X/Y/Z inputs so users with an odd-shaped block can dial it in.
+type CrystalKey = "k9_50_50_80" | "k9_40_40_60" | "k9_60_60_100" | "k9_50_50_100" | "k9_70_70_70" | "custom";
+
+const CRYSTAL_PRESETS: Record<Exclude<CrystalKey, "custom">, { x: number; y: number; z: number }> = {
+  k9_50_50_80:  { x: 50, y: 50, z: 80 },
+  k9_40_40_60:  { x: 40, y: 40, z: 60 },
+  k9_60_60_100: { x: 60, y: 60, z: 100 },
+  k9_50_50_100: { x: 50, y: 50, z: 100 },
+  k9_70_70_70:  { x: 70, y: 70, z: 70 },
+};
 
 // UI slider defaults per preset. `density` is 0..1 (maps straight to
 // worker base_density). `depth` is 0..2.5 where 1.0 = "normal"; worker
@@ -90,8 +111,12 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [laser, setLaser] = useState<LaserKey>("xtool");
   const [params, setParams] = useState<Params>({
     density: 0.95, depth: 0.9, jitter: 0.5, pointy: 0.6, auto: true,
-    brightness: 0, contrast: 1, gamma: 1, zlayers: 90, marginX: 3, marginY: 3, invert: false,
+    brightness: 0, contrast: 1, gamma: 1, zlayers: 90,
+    sizeX: 50, sizeY: 50, sizeZ: 80,
+    marginX: 3, marginY: 3, marginZ: 3,
+    invert: false,
   });
+  const [crystalKey, setCrystalKey] = useState<CrystalKey>("k9_50_50_80");
   const [lines, setLines] = useState<string[]>(["", "", ""]);
   const [bgRemoved, setBgRemoved] = useState(true);
   const [photo, setPhoto] = useState<{ name: string; size: number; previewUrl: string; file: File } | null>(null);
@@ -258,12 +283,12 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       remove_bg: bgRemoved,
       face_aware: true,
       face_strength: 0.8,
-      size_x: 50,
-      size_y: 50,
-      size_z: 80,
+      size_x: params.sizeX,
+      size_y: params.sizeY,
+      size_z: params.sizeZ,
       margin_x: params.marginX,
       margin_y: params.marginY,
-      margin_z: 3,
+      margin_z: params.marginZ,
       base_density: Math.max(0.05, Math.min(1.0, params.density)),
       max_points_per_pixel: 15,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
@@ -342,6 +367,17 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     setLaser(next);
     const f = LASER_FORMAT[next];
     if (f) setSelectedFormat(f);
+  };
+
+  // Swap the crystal preset and snap sizeX/Y/Z to the named dimensions. The
+  // margin values are preserved — users tend to have one preferred safe-zone
+  // regardless of which block they bought.
+  const handleCrystalChange = (next: CrystalKey) => {
+    setCrystalKey(next);
+    if (next !== "custom") {
+      const dims = CRYSTAL_PRESETS[next];
+      setParams((p) => ({ ...p, sizeX: dims.x, sizeY: dims.y, sizeZ: dims.z }));
+    }
   };
 
   const handleFile = useCallback(async (file: File) => {
@@ -469,6 +505,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         <SettingsRail
           preset={preset} setPreset={setPreset}
           laser={laser} setLaser={handleLaserChange}
+          crystalKey={crystalKey} setCrystalKey={handleCrystalChange}
           params={params} setParams={setParams}
           lines={lines} setLines={setLines}
           photo={photo} bgRemoved={bgRemoved} setBgRemoved={setBgRemoved}
@@ -487,6 +524,10 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             previewUrl={previewUrl}
             pointCount={pointCount}
             retuning={retuning}
+            crystal={{
+              sizeX: params.sizeX, sizeY: params.sizeY, sizeZ: params.sizeZ,
+              marginX: params.marginX, marginY: params.marginY, marginZ: params.marginZ,
+            }}
           />
           <ExportBar
             selectedFormat={selectedFormat}
@@ -578,11 +619,13 @@ function ChevronDown() {
 
 // ---------- Settings rail ----------
 function SettingsRail({
-  preset, setPreset, laser, setLaser, params, setParams, lines, setLines,
+  preset, setPreset, laser, setLaser, crystalKey, setCrystalKey,
+  params, setParams, lines, setLines,
   photo, bgRemoved, setBgRemoved, onReset,
 }: {
   preset: PresetKey; setPreset: (v: PresetKey) => void;
   laser: LaserKey; setLaser: (v: LaserKey) => void;
+  crystalKey: CrystalKey; setCrystalKey: (v: CrystalKey) => void;
   params: Params;
   setParams: React.Dispatch<React.SetStateAction<Params>>;
   lines: string[]; setLines: (v: string[]) => void;
@@ -652,16 +695,51 @@ function SettingsRail({
         <Slider label="Gamma"      value={params.gamma}      set={(v) => sp("gamma",      v)} min={0.5} max={2.0} />
 
         <div className="sub-label">Crystal dimensions</div>
+        <Dropdown
+          label="Crystal size" value={crystalKey}
+          onChange={(v) => setCrystalKey(v as CrystalKey)}
+          options={[
+            { k: "k9_50_50_80",  label: "K9 · 50 × 50 × 80",   desc: "xTool / Haotian default", meta: "50×50×80" },
+            { k: "k9_40_40_60",  label: "K9 · 40 × 40 × 60",   desc: "Small / Commarker",       meta: "40×40×60" },
+            { k: "k9_60_60_100", label: "K9 · 60 × 60 × 100",  desc: "Tall portrait block",     meta: "60×60×100" },
+            { k: "k9_50_50_100", label: "K9 · 50 × 50 × 100",  desc: "Tall standard block",     meta: "50×50×100" },
+            { k: "k9_70_70_70",  label: "K9 · 70 × 70 × 70",   desc: "Cube",                    meta: "70×70×70" },
+            { k: "custom",       label: "Custom",              desc: "Dial in X/Y/Z yourself",  meta: "any" },
+          ]}
+        />
+        {/* Any manual nudge to X/Y/Z flips the preset to "custom" so the
+            dropdown stops claiming we're still on a named crystal. */}
+        <Slider
+          label="Size X" value={params.sizeX}
+          set={(v) => { setCrystalKey("custom"); sp("sizeX", v); }}
+          min={20} max={120} step={1}
+          display={(v) => Math.round(v) + " mm"}
+        />
+        <Slider
+          label="Size Y" value={params.sizeY}
+          set={(v) => { setCrystalKey("custom"); sp("sizeY", v); }}
+          min={20} max={120} step={1}
+          display={(v) => Math.round(v) + " mm"}
+        />
+        <Slider
+          label="Size Z" value={params.sizeZ}
+          set={(v) => { setCrystalKey("custom"); sp("sizeZ", v); }}
+          min={20} max={160} step={1}
+          display={(v) => Math.round(v) + " mm"}
+        />
         <Slider
           label="Z layers" value={params.zlayers} set={(v) => sp("zlayers", v)}
           min={20} max={120} step={1}
           display={(v) => Math.round(v) + " layers"}
           hint="More layers = smoother depth transitions"
         />
-        <div className="mini-row">
-          <Slider label="Margin X" value={params.marginX} set={(v) => sp("marginX", v)} min={0} max={10} step={0.1} display={(v) => v.toFixed(1) + " mm"} />
-          <Slider label="Margin Y" value={params.marginY} set={(v) => sp("marginY", v)} min={0} max={10} step={0.1} display={(v) => v.toFixed(1) + " mm"} />
+        <div className="sub-label">Safe-zone margin</div>
+        <div className="s-hint" style={{ marginBottom: 6 }}>
+          No point will render inside this margin from each crystal wall.
         </div>
+        <Slider label="Margin X" value={params.marginX} set={(v) => sp("marginX", v)} min={0} max={20} step={0.1} display={(v) => v.toFixed(1) + " mm"} />
+        <Slider label="Margin Y" value={params.marginY} set={(v) => sp("marginY", v)} min={0} max={20} step={0.1} display={(v) => v.toFixed(1) + " mm"} />
+        <Slider label="Margin Z" value={params.marginZ} set={(v) => sp("marginZ", v)} min={0} max={20} step={0.1} display={(v) => v.toFixed(1) + " mm"} />
 
         <div className="sub-label">Options</div>
         <div className="toggles">
@@ -797,7 +875,7 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 // ---------- Preview (source + cloud panes) ----------
 function Preview({
   procStage, params, lines, photo, bgRemoved, procProgress, onFile, onReset,
-  previewUrl, pointCount, retuning,
+  previewUrl, pointCount, retuning, crystal,
 }: {
   procStage: "idle" | "uploading" | "processing" | "ready" | "error";
   params: Params;
@@ -810,6 +888,10 @@ function Preview({
   previewUrl: string | null;
   pointCount: number | null;
   retuning: boolean;
+  crystal: {
+    sizeX: number; sizeY: number; sizeZ: number;
+    marginX: number; marginY: number; marginZ: number;
+  };
 }) {
   const [srcView, setSrcView] = useState<"photo" | "depth">("photo");
   const ready = procStage === "ready";
@@ -887,9 +969,11 @@ function Preview({
           {ready && previewUrl ? (
             // The real 3D viewer — loads the PLY the worker uploaded to R2.
             // Renders with OrbitControls so the user can zoom (wheel),
-            // rotate (drag), and pan (right-click drag / two-finger).
+            // rotate (drag), and pan (right-click drag / two-finger). The
+            // red wireframe matches the crystal dimensions from the rail
+            // so users can see how the cloud fits their physical block.
             <div style={{ position: "absolute", inset: 0 }}>
-              <PointCloudViewer url={previewUrl} />
+              <PointCloudViewer url={previewUrl} crystal={crystal} />
             </div>
           ) : (
             // Placeholder until the worker returns. Uses the procedural
@@ -913,7 +997,9 @@ function Preview({
                   {fname.toUpperCase()}.ply
                 </div>
                 <div className="ol ol-tr">{pts}</div>
-                <div className="ol ol-bl">50 × 50 × 80 mm</div>
+                <div className="ol ol-bl">
+                  {Math.round(crystal.sizeX)} × {Math.round(crystal.sizeY)} × {Math.round(crystal.sizeZ)} mm
+                </div>
                 <div className="ol ol-br">depth-anything-v2</div>
                 {lines.filter(Boolean).length > 0 && (
                   <div className="cloud-text">

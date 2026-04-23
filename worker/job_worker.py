@@ -59,14 +59,19 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
     if isinstance(opts_raw, str):
         opts_raw = json.loads(opts_raw)
 
-    # Apply the content preset FIRST to get a sensible base, THEN let
-    # explicit client fields override it. The old order applied the preset
-    # last and clobbered the density/z_scale sliders completely — the
-    # retune endpoint looked broken because every slider change resulted
-    # in an identical preset-forced cloud.
+    # Apply BOTH presets FIRST to seed sensible defaults, THEN let explicit
+    # client fields override. Ordering matters:
+    #   1. Empty CrystalParams — hardcoded dataclass defaults.
+    #   2. content_preset (portrait/pet/etc.) — overrides tonemap + z curves.
+    #   3. laser_preset (xtool/haotian/etc.) — overrides crystal size.
+    #   4. Client fields — win against everything else via pick() below.
+    # Without step 4 winning, the density/depth sliders and the crystal
+    # dimension inputs in the UI would silently be clobbered by the presets.
     crystal = CrystalParams()
     if opts_raw.get("content_preset"):
         crystal = apply_content_preset(crystal, opts_raw["content_preset"])
+    if opts_raw.get("laser_preset"):
+        crystal = apply_laser_preset(crystal, opts_raw["laser_preset"])
 
     def pick(k: str, fallback):
         v = opts_raw.get(k)
@@ -98,8 +103,6 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         layer_falloff=pick("layer_falloff", crystal.layer_falloff),
         seed=pick("seed", crystal.seed),
     )
-    if opts_raw.get("laser_preset"):
-        crystal = apply_laser_preset(crystal, opts_raw["laser_preset"])
 
     text_overlay = None
     text_lines = opts_raw.get("text_lines") or []
