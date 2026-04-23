@@ -125,7 +125,23 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   // cached depth map all subsequent retune jobs reuse. Stays fixed across
   // retunes so we don't repeatedly re-run the ~2-3s depth model.
   const [parentJobId, setParentJobId] = useState<string | null>(null);
-  const [procStage, setProcStage] = useState<"idle" | "uploading" | "processing" | "ready" | "error">("idle");
+  // Step-by-step flow:
+  //   upload    — no photo yet, awaiting file drop.
+  //   bgremove  — photo chosen; deciding whether to strip the background.
+  //               The R2 upload runs in parallel with this step, so the
+  //               Continue button is gated on `uploadedKey` being set.
+  //   configure — bg decision made; dialing in crystal size + margins.
+  //               The red wireframe in the preview updates live.
+  //   processing — Generate clicked; worker is running; show progress.
+  //   ready      — cloud PLY is live; slider changes trigger retune.
+  //   error      — terminal failure; user has to reset.
+  const [stepMode, setStepMode] = useState<
+    "upload" | "bgremove" | "configure" | "processing" | "ready" | "error"
+  >("upload");
+  // R2 object key of the uploaded photo. Set as soon as the upload PUT
+  // succeeds — `handleGenerate` uses it when the user finally clicks the
+  // Generate button on the configure step.
+  const [uploadedKey, setUploadedKey] = useState<string | null>(null);
   const [procProgress, setProcProgress] = useState(0);
   const [selectedFormat, setSelectedFormat] = useState<string>("GLB");
   const [busy, setBusy] = useState(false);
@@ -133,7 +149,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [pointCount, setPointCount] = useState<number | null>(null);
   // True while a retune child job is in flight. Deliberately separate from
-  // procStage so the currently-rendered cloud stays on screen — swapping to
+  // stepMode so the currently-rendered cloud stays on screen — swapping to
   // the placeholder on every slider tick was the "reloads the whole thing"
   // bug the user was complaining about.
   const [retuning, setRetuning] = useState(false);
@@ -167,25 +183,25 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
 
   // Simulated progress between status checks.
   useEffect(() => {
-    if (procStage !== "processing") return;
+    if (stepMode !== "processing") return;
     const t = setInterval(() => {
       setProcProgress((p) => (p >= 92 ? 92 : p + 1 + Math.random() * 2));
     }, 250);
     return () => clearInterval(t);
-  }, [procStage]);
+  }, [stepMode]);
 
   // Poll job status.
   //
   // Two flavours:
-  //  - Initial upload: procStage is "processing", we drive the big overlay
+  //  - Initial upload: stepMode is "processing", we drive the big overlay
   //    + progress bar and only flip to "ready" once the PLY lands.
-  //  - Retune: procStage stays "ready", the cloud on screen stays on
+  //  - Retune: stepMode stays "ready", the cloud on screen stays on
   //    screen, we just swap `previewUrl` when the new PLY is available.
   //    Poll fast (500ms) because retune rounds back in well under a second.
   useEffect(() => {
     if (!jobId) return;
     const isRetune = retuning;
-    if (!isRetune && procStage !== "processing") return;
+    if (!isRetune && stepMode !== "processing") return;
 
     let cancelled = false;
     const poll = async () => {
@@ -222,7 +238,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             setRetuning(false);
           } else {
             setProcProgress(100);
-            setTimeout(() => setProcStage("ready"), 250);
+            setTimeout(() => setStepMode("ready"), 250);
           }
         } else if (job.status === "failed") {
           if (isRetune) {
@@ -230,7 +246,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             setRetuning(false);
             console.warn("[retune] failed:", job.error);
           } else {
-            setProcStage("error");
+            setStepMode("error");
             toast.error(job.error || "Processing failed. Try a different photo.");
           }
         }
@@ -239,7 +255,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     const interval = setInterval(poll, isRetune ? 500 : 2500);
     poll();
     return () => { cancelled = true; clearInterval(interval); };
-  }, [jobId, procStage, retuning]);
+  }, [jobId, stepMode, retuning]);
 
   const onReset = () => {
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
@@ -248,7 +264,8 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     setPhoto(null);
     setJobId(null);
     setParentJobId(null);
-    setProcStage("idle");
+    setUploadedKey(null);
+    setStepMode("upload");
     setProcProgress(0);
     setPreviewUrl(null);
     setPointCount(null);
@@ -333,7 +350,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         return;
       }
       const { jobId: childId } = (await r.json()) as { jobId: string };
-      // Deliberately do NOT set procStage — the main viewer stays on the
+      // Deliberately do NOT set stepMode — the main viewer stays on the
       // previous cloud, and we only flip a small "updating…" badge on.
       // This is what makes slider drags feel live instead of "re-loading".
       setRetuning(true);
@@ -380,12 +397,18 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     }
   };
 
+  // Step 1 → step 2: just upload the photo to R2 and advance to the
+  // bg-remove step. We deliberately DON'T create the job here — the user
+  // gets to pick bg-remove and crystal dimensions first. The upload runs
+  // while they're on the bgremove step so when they click "Continue" they
+  // don't wait for it again.
   const handleFile = useCallback(async (file: File) => {
     if (!file) return;
     // Guests can upload and preview; sign-in is only required at checkout.
     const previewUrl = URL.createObjectURL(file);
     setPhoto({ name: file.name, size: file.size, previewUrl, file });
-    setProcStage("uploading");
+    setStepMode("bgremove");
+    setUploadedKey(null);
     setProcProgress(0);
     setBusy(true);
 
@@ -409,7 +432,6 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       }
       const { uploadUrl, key } = (await presign.json()) as { uploadUrl: string; key: string; jobId: string };
 
-      setProcProgress(10);
       let put: Response;
       try {
         put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
@@ -421,20 +443,43 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         );
       }
       if (!put.ok) throw new Error(`R2 PUT rejected (${put.status})`);
-      setProcProgress(25);
 
-      // Always ask the worker for PLY alongside whatever the user picked,
-      // because the in-browser 3D preview loads PLY. The extra export is
-      // cheap (~1-2s) and it means the preview works even if the user only
-      // needs DXF/XYZ for their laser.
+      // Stash the key — handleGenerate will use it when the user finishes
+      // the bg-remove + configure steps and clicks Generate.
+      setUploadedKey(key);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Upload failed");
+      setStepMode("error");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  // Step 2 → step 3: bg-remove decision has been made, move to configure.
+  // The actual `bgRemoved` toggle state is owned by SettingsRail; this just
+  // drives the step machine.
+  const handleContinueFromBg = useCallback(() => {
+    if (stepMode !== "bgremove") return;
+    setStepMode("configure");
+  }, [stepMode]);
+
+  // Step 3 → step 4: user has dialed in the crystal; create the job.
+  // This is the first point the worker hears about any of their settings,
+  // so the first render already reflects everything they chose. After this,
+  // slider changes go through the retune fast-path.
+  const handleGenerate = useCallback(async () => {
+    if (!uploadedKey) return;
+    setStepMode("processing");
+    setProcProgress(30);
+    setBusy(true);
+    try {
       const opts = buildJobOptions();
-
       let job: Response;
       try {
         job = await fetch("/api/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ inputKey: key, options: opts }),
+          body: JSON.stringify({ inputKey: uploadedKey, options: opts }),
         });
       } catch (e) {
         throw new Error(`Couldn't reach /api/jobs (${e instanceof Error ? e.message : "network error"})`);
@@ -451,15 +496,14 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       // Parent id is the *first* full-inference job — all subsequent slider
       // changes retune against this one so the depth model only runs once.
       setParentJobId(newJobId);
-      setProcProgress(35);
-      setProcStage("processing");
+      setProcProgress(40);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Upload failed");
-      setProcStage("error");
+      toast.error(e instanceof Error ? e.message : "Job creation failed");
+      setStepMode("error");
     } finally {
       setBusy(false);
     }
-  }, [buildJobOptions]);
+  }, [uploadedKey, buildJobOptions]);
 
   const onExport = async () => {
     if (!jobId) return;
@@ -488,7 +532,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     }
   };
 
-  const ready = procStage === "ready";
+  const ready = stepMode === "ready";
   const subOk = signedIn && plan && plan !== "free";
   const disabled = !ready || !selectedFormat || busy;
 
@@ -513,14 +557,19 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
         />
         <div className="studio-main">
           <Preview
-            procStage={procStage}
+            stepMode={stepMode}
             params={params}
             lines={lines}
             photo={photo}
             bgRemoved={bgRemoved}
+            setBgRemoved={setBgRemoved}
             procProgress={procProgress}
             onFile={handleFile}
             onReset={onReset}
+            onContinueFromBg={handleContinueFromBg}
+            onGenerate={handleGenerate}
+            uploadedKey={uploadedKey}
+            busy={busy}
             previewUrl={previewUrl}
             pointCount={pointCount}
             retuning={retuning}
@@ -874,17 +923,23 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 
 // ---------- Preview (source + cloud panes) ----------
 function Preview({
-  procStage, params, lines, photo, bgRemoved, procProgress, onFile, onReset,
+  stepMode, params, lines, photo, bgRemoved, setBgRemoved, procProgress,
+  onFile, onReset, onContinueFromBg, onGenerate, uploadedKey, busy,
   previewUrl, pointCount, retuning, crystal,
 }: {
-  procStage: "idle" | "uploading" | "processing" | "ready" | "error";
+  stepMode: "upload" | "bgremove" | "configure" | "processing" | "ready" | "error";
   params: Params;
   lines: string[];
   photo: { name: string; previewUrl: string } | null;
   bgRemoved: boolean;
+  setBgRemoved: (v: boolean) => void;
   procProgress: number;
   onFile: (f: File) => void;
   onReset: () => void;
+  onContinueFromBg: () => void;
+  onGenerate: () => void;
+  uploadedKey: string | null;
+  busy: boolean;
   previewUrl: string | null;
   pointCount: number | null;
   retuning: boolean;
@@ -894,11 +949,25 @@ function Preview({
   };
 }) {
   const [srcView, setSrcView] = useState<"photo" | "depth">("photo");
-  const ready = procStage === "ready";
+  const ready = stepMode === "ready";
+  // Show the 3D viewer (with red wireframe) for every step after upload.
+  // During bgremove / configure we pass no URL — so users see JUST the
+  // crystal bounds while they dial dimensions in the rail. Once ready,
+  // the same viewer gets the PLY URL and the cloud fills the box.
+  const showWireframeViewer = photo && stepMode !== "upload" && stepMode !== "error";
   // Prefer the worker's real point count once we have it; fall back to the
   // slider-based estimate until the cloud arrives.
   const pts = formatPts(pointCount ?? 300000 + params.density * 2200000);
   const fname = photo?.name?.replace(/\.[^.]+$/, "") || "subject_01";
+
+  const stepLabel: Record<typeof stepMode, string> = {
+    upload:     "step 1 · upload",
+    bgremove:   "step 2 · background",
+    configure:  "step 3 · crystal space",
+    processing: "generating…",
+    ready:      "ready",
+    error:      "error",
+  };
 
   return (
     <div className="preview">
@@ -915,7 +984,7 @@ function Preview({
               <button className={srcView === "depth" ? "on" : ""} onClick={() => setSrcView("depth")} disabled={!ready}>Depth</button>
             </div>
           ) : (
-            <span className="mono muted" style={{ fontSize: 10 }}>step 1 · upload</span>
+            <span className="mono muted" style={{ fontSize: 10 }}>{stepLabel[stepMode]}</span>
           )}
         </div>
         <div className="pane-body">
@@ -932,9 +1001,11 @@ function Preview({
             <div className="stat-grp">
               <Stat k="file" v={photo.name} />
               <Stat k="status" v={
-                procStage === "ready" ? "ready" :
-                procStage === "error" ? "error" :
-                procStage === "uploading" ? "uploading…" : "processing…"
+                stepMode === "ready" ? "ready" :
+                stepMode === "error" ? "error" :
+                stepMode === "bgremove" ? (uploadedKey ? "ready · step 2" : "uploading…") :
+                stepMode === "configure" ? "configure · step 3" :
+                stepMode === "processing" ? "processing…" : "—"
               } />
             </div>
             <button className="rail-reset mono" onClick={onReset}>reset ↺</button>
@@ -960,24 +1031,32 @@ function Preview({
               ? "updating…"
               : ready
                 ? "drag · zoom · pan"
-                : !photo
-                  ? "awaiting photo"
-                  : "processing…"}
+                : stepMode === "bgremove"
+                  ? "step 2 · background"
+                  : stepMode === "configure"
+                    ? "drag · zoom · pan · size the crystal"
+                    : stepMode === "processing"
+                      ? "processing…"
+                      : !photo
+                        ? "awaiting photo"
+                        : "—"}
           </span>
         </div>
         <div className="pane-body pane-body-cloud">
-          {ready && previewUrl ? (
-            // The real 3D viewer — loads the PLY the worker uploaded to R2.
-            // Renders with OrbitControls so the user can zoom (wheel),
-            // rotate (drag), and pan (right-click drag / two-finger). The
-            // red wireframe matches the crystal dimensions from the rail
-            // so users can see how the cloud fits their physical block.
+          {showWireframeViewer ? (
+            // The real 3D viewer — shows the red crystal wireframe at all
+            // times once a photo is chosen, and loads the cloud PLY once the
+            // worker returns. Camera state survives retune because the
+            // viewer loads imperatively and never remounts.
             <div style={{ position: "absolute", inset: 0 }}>
-              <PointCloudViewer url={previewUrl} crystal={crystal} />
+              <PointCloudViewer
+                url={ready && previewUrl ? previewUrl : undefined}
+                crystal={crystal}
+              />
             </div>
           ) : (
-            // Placeholder until the worker returns. Uses the procedural
-            // canvas so there's something alive on screen during upload.
+            // Pre-upload (or error) fallback — procedural canvas so there's
+            // something alive on screen before the user drops a photo.
             <div style={{ position: "absolute", inset: 0 }}>
               <PointCloudCanvas
                 density={0.18}
@@ -1009,18 +1088,39 @@ function Preview({
               </>
             ) : (
               <>
-                <div className="ol ol-tl muted" style={{ opacity: 0.3 }}>preview · empty</div>
-                <div className="ol ol-tr muted" style={{ opacity: 0.3 }}>awaiting source</div>
-                <div className="cloud-hint">
-                  <div className="cloud-hint-title">Your point cloud renders here.</div>
-                  <div className="mono" style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
-                    drop a photo on the left to begin
-                  </div>
+                <div className="ol ol-tl muted" style={{ opacity: 0.3 }}>
+                  {stepMode === "upload" ? "preview · empty" : `${Math.round(crystal.sizeX)} × ${Math.round(crystal.sizeY)} × ${Math.round(crystal.sizeZ)} mm`}
                 </div>
+                <div className="ol ol-tr muted" style={{ opacity: 0.3 }}>
+                  {stepMode === "upload" ? "awaiting source" : stepLabel[stepMode]}
+                </div>
+                {stepMode === "upload" && (
+                  <div className="cloud-hint">
+                    <div className="cloud-hint-title">Your point cloud renders here.</div>
+                    <div className="mono" style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
+                      drop a photo on the left to begin
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
-          {(procStage === "processing" || procStage === "uploading") && (
+          {stepMode === "bgremove" && (
+            <BgRemoveStep
+              bgRemoved={bgRemoved}
+              setBgRemoved={setBgRemoved}
+              uploading={!uploadedKey}
+              onContinue={onContinueFromBg}
+            />
+          )}
+          {stepMode === "configure" && (
+            <ConfigureStep
+              crystal={crystal}
+              onGenerate={onGenerate}
+              busy={busy}
+            />
+          )}
+          {stepMode === "processing" && (
             <ProcessingOverlay progress={procProgress} />
           )}
         </div>
@@ -1118,6 +1218,126 @@ function DepthView() {
         <span className="mono muted">near</span>
         <div className="scale-bar" />
         <span className="mono muted">far</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Step-2 overlay. Blocks interaction with the wireframe underneath — the
+ * user makes a bg-remove decision before they can move on. The Continue
+ * button is disabled until the R2 upload finishes (usually ~1s), so on a
+ * fast connection the user rarely sees the "Uploading photo…" state.
+ */
+function BgRemoveStep({
+  bgRemoved, setBgRemoved, uploading, onContinue,
+}: {
+  bgRemoved: boolean;
+  setBgRemoved: (v: boolean) => void;
+  uploading: boolean;
+  onContinue: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute", inset: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "rgba(5, 7, 13, 0.55)",
+        backdropFilter: "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
+        pointerEvents: "auto",
+      }}
+    >
+      <div className="proc-card" style={{ maxWidth: 360, textAlign: "left" }}>
+        <div className="mono muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+          step 2 · background
+        </div>
+        <div style={{ fontSize: 18, fontWeight: 600, margin: "10px 0 6px" }}>
+          Remove the background?
+        </div>
+        <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 14, lineHeight: 1.5 }}>
+          Cuts the subject out with a neural matting model. Keep it ON for
+          portraits and pets, OFF for landscapes or scenes where the
+          background is part of the picture.
+        </div>
+        <div style={{ margin: "6px 0 14px" }}>
+          <Toggle label="Remove background" value={bgRemoved} set={setBgRemoved} />
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary btn-lg"
+          disabled={uploading}
+          style={{ width: "100%" }}
+          onClick={onContinue}
+        >
+          {uploading ? "Uploading photo…" : "Continue →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Step-3 overlay. Lives at the bottom of the pane so the user can still
+ * drag/rotate the wireframe above and see their crystal from any angle
+ * while they size it from the rail. Clicking Generate fires the first
+ * real job (bg-remove + depth + sample + export).
+ */
+function ConfigureStep({
+  crystal, onGenerate, busy,
+}: {
+  crystal: {
+    sizeX: number; sizeY: number; sizeZ: number;
+    marginX: number; marginY: number; marginZ: number;
+  };
+  onGenerate: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute", left: 0, right: 0, bottom: 16,
+        display: "flex", justifyContent: "center",
+        // Don't block the wireframe above the card.
+        pointerEvents: "none",
+      }}
+    >
+      <div className="proc-card" style={{ minWidth: 380, pointerEvents: "auto", textAlign: "left" }}>
+        <div className="mono muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+          step 3 · crystal space
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 600, margin: "8px 0 4px" }}>
+          Size your crystal
+        </div>
+        <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 10, lineHeight: 1.5 }}>
+          Pick a K9 preset or dial X/Y/Z and margins in the panel on the
+          left. The red box above is your physical block — the cloud will
+          be generated to fill it (minus the margin).
+        </div>
+        <div
+          style={{
+            display: "flex", flexWrap: "wrap", gap: "4px 14px",
+            fontSize: 11, marginBottom: 12,
+          }}
+        >
+          <span className="mono muted">size</span>
+          <span className="mono">
+            {Math.round(crystal.sizeX)} × {Math.round(crystal.sizeY)} × {Math.round(crystal.sizeZ)} mm
+          </span>
+          <span className="mono muted">margin</span>
+          <span className="mono">
+            {crystal.marginX.toFixed(1)} · {crystal.marginY.toFixed(1)} · {crystal.marginZ.toFixed(1)} mm
+          </span>
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary btn-lg"
+          disabled={busy}
+          style={{ width: "100%" }}
+          onClick={onGenerate}
+        >
+          {busy ? "Generating…" : "Generate point cloud →"}
+        </button>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
-import { Canvas, useLoader } from "@react-three/fiber";
+import { useEffect, useMemo, useState } from "react";
+import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
@@ -31,6 +31,13 @@ const DEFAULT_CRYSTAL: CrystalBounds = {
  * primitive. PLY is the lightest format we emit and the one three.js loads
  * natively (with per-vertex colour if the PLY contains it).
  *
+ * Key property: we load imperatively (not via useLoader / Suspense) and hold
+ * onto the *previous* geometry until the new one finishes downloading. That
+ * way a retune doesn't blink the cloud off-screen, and — combined with no
+ * `key` on the Canvas — the OrbitControls camera stays exactly where the user
+ * left it. The whole "every slider tick resets the camera to top-right" bug
+ * was caused by `<Canvas key={url}>` forcing a full remount on URL change.
+ *
  * Points come out of the worker in real millimetre coordinates — range is
  * [0, sizeX] × [0, sizeY] × [0, sizeZ] with the image fitting inside
  * (sizeX - 2·marginX, sizeY - 2·marginY). We shift the cloud by half the
@@ -38,9 +45,40 @@ const DEFAULT_CRYSTAL: CrystalBounds = {
  * wireframe box drawn around the origin visualises the physical envelope.
  */
 function PointCloud({ url, crystal }: { url: string; crystal: CrystalBounds }) {
-  const geom = useLoader(PLYLoader, url) as THREE.BufferGeometry;
+  const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
+
+  useEffect(() => {
+    // Imperative load: we fetch in the background and only swap geom once
+    // the new PLY has parsed. `cancelled` guards against late responses
+    // firing after a second URL change (or unmount) and leaking buffers.
+    let cancelled = false;
+    const loader = new PLYLoader();
+    loader.load(
+      url,
+      (next) => {
+        if (cancelled) {
+          next.dispose();
+          return;
+        }
+        setGeom((prev) => {
+          if (prev) prev.dispose();
+          return next;
+        });
+      },
+      undefined,
+      (err) => {
+        // Presigned URL expiry or a malformed PLY — log loudly, keep the
+        // old cloud on screen rather than crashing the canvas.
+        console.warn("[point-cloud-viewer] ply load failed:", err);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
 
   const object = useMemo(() => {
+    if (!geom) return null;
     const hasColor = !!geom.getAttribute("color");
 
     const material = new THREE.PointsMaterial({
@@ -62,6 +100,7 @@ function PointCloud({ url, crystal }: { url: string; crystal: CrystalBounds }) {
     return points;
   }, [geom, crystal.sizeX, crystal.sizeY, crystal.sizeZ]);
 
+  if (!object) return null;
   return <primitive object={object} />;
 }
 
@@ -114,6 +153,10 @@ function CrystalFrame({ crystal }: { crystal: CrystalBounds }) {
  * right-click (or two-finger) drag to pan. Fills its parent element —
  * callers are responsible for giving it a sized container.
  *
+ * `url` is optional — when omitted, only the crystal wireframe renders,
+ * which is what we show during the "configure crystal space" step so users
+ * can size their block before committing to generate the cloud.
+ *
  * `crystal` is optional; if omitted we use a sensible K9 default (50×50×80
  * with 3mm margins). Pass it in from the settings rail so the wireframe
  * tracks the user's actual crystal dimensions.
@@ -122,7 +165,7 @@ export function PointCloudViewer({
   url,
   crystal = DEFAULT_CRYSTAL,
 }: {
-  url: string;
+  url?: string;
   crystal?: CrystalBounds;
 }) {
   // Frame the camera based on the largest crystal dimension — 2.4x keeps a
@@ -130,19 +173,16 @@ export function PointCloudViewer({
   const camZ = Math.max(crystal.sizeX, crystal.sizeY, crystal.sizeZ) * 2.4;
 
   return (
+    // NB: deliberately NO `key` on the Canvas. Remounting it on every URL
+    // change was what reset the OrbitControls camera every retune.
     <Canvas
-      // Force the whole scene to reset when a new job URL comes in so the
-      // loader doesn't keep the previous geometry alive.
-      key={url}
       camera={{ position: [camZ * 0.6, camZ * 0.3, camZ], fov: 35, near: 0.1, far: 4000 }}
       dpr={[1, 2]}
       style={{ width: "100%", height: "100%", display: "block" }}
     >
       <color attach="background" args={["#05070d"]} />
       <ambientLight intensity={0.9} />
-      <Suspense fallback={null}>
-        <PointCloud url={url} crystal={crystal} />
-      </Suspense>
+      {url ? <PointCloud url={url} crystal={crystal} /> : null}
       <CrystalFrame crystal={crystal} />
       <OrbitControls
         enableDamping
