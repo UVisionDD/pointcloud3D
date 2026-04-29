@@ -36,14 +36,15 @@ class CrystalParams:
 
     # Density / distribution.
     # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    # With layer_height_mm driving z_layers (typically 30–60 layers on a 5–8 mm
-    # volumetric slab), keep base_density modest so total counts land in the
-    # 500k–2M range for normal photos. The Bernoulli math is roughly:
-    #   E[points] ≈ pixels × mean(density) × base_density × max_points_per_pixel
+    # The Bernoulli math is roughly:
+    #   E[points] ≈ pixels × mean(density) × base_density × max_points_per_pixel × falloff_avg
     # so doubling base_density doubles output, and brightness/contrast/gamma
-    # feed directly into mean(density). 0.18 lands a 4 MP portrait at
-    # ~700k–1M after bg removal; bump to 0.4+ for denser clouds.
-    base_density: float = 0.18
+    # feed directly into mean(density). Total count is approximately
+    # independent of layer_height — that knob controls Z resolution, not
+    # how many points get emitted. 0.08 calibrates a 4 MP photo (mean
+    # density ~0.25) to land in the 750k–1.5M range; bump to 0.15+ for
+    # denser clouds.
+    base_density: float = 0.08
     # Max number of points a single pixel can emit across all Z layers.
     max_points_per_pixel: int = 15
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.

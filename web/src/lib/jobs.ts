@@ -25,7 +25,7 @@ export const jobOptionsSchema = z.object({
 
   // Distribution. Defaults mirror CrystalParams in worker/pointcloud.py and
   // target ~1.5M–3M points on a typical portrait after bg removal.
-  base_density: z.number().min(0).max(1).default(0.18),
+  base_density: z.number().min(0).max(1).default(0.08),
   max_points_per_pixel: z.number().int().min(1).max(32).default(15),
   xy_jitter: z.number().min(0).max(2).default(0.5),
   // Layer height in mm — primary vertical-resolution control. Smaller =

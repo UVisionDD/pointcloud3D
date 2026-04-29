@@ -347,7 +347,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       // photopoints3d-style Bernoulli: count emerges from layer_height ×
       // base_density × tonemapped luminance, so brightness/contrast/gamma
       // sliders actually move the point total.
-      base_density: 0.18,
+      base_density: 0.08,
       max_points_per_pixel: 15,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
       // Layer height (mm) is now driven by the rail slider — smaller layers
