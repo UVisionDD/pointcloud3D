@@ -320,10 +320,20 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       margin_x: params.marginX,
       margin_y: params.marginY,
       margin_z: params.marginZ,
-      base_density: Math.max(0.05, Math.min(1.0, params.density)),
+      // photopoints3d-style Bernoulli: count emerges from layer_height ×
+      // base_density × tonemapped luminance, so brightness/contrast/gamma
+      // sliders actually move the point total. Map the 0..1 density slider
+      // to a base_density of ~0.04..0.24 so a 4 MP photo at default settings
+      // lands around 700k–2M depending on subject brightness.
+      base_density: Math.max(0.04, Math.min(0.5, 0.04 + params.density * 0.20)),
       max_points_per_pixel: 15,
-      target_points: Math.round(300000 + params.density * 2200000),
+      target_points: 0,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
+      // Layer height in mm — primary vertical-resolution control. We currently
+      // fix at 0.15 mm (good K9 default); the preset chosen above can override
+      // it (portraits go to 0.10 mm for finer cheek gradients, landscape to
+      // 0.18 mm). Add a slider here once we expose Z resolution to users.
+      layer_height_mm: 0.15,
       z_layers: zLayers,
       sampling_max_side_px: 2500,
       volumetric_thickness: 0.08,
@@ -807,7 +817,7 @@ function SettingsRail({
           label="Point density" value={params.density}
           set={(v) => sp("density", v)}
           hint="More points = sharper result, longer engraving time"
-          display={(v) => formatPts(300000 + v * 2200000)}
+          display={(v) => formatPts(Math.round(300000 + v * 1700000))}
         />
 
         {/* Bg-remove is step 2's key decision, so it lives here — NOT in
@@ -1055,7 +1065,7 @@ function Preview({
   const showWireframeViewer = photo && stepMode !== "upload" && stepMode !== "error";
   // Prefer the worker's real point count once we have it; fall back to the
   // slider-based estimate until the cloud arrives.
-  const pts = formatPts(pointCount ?? 300000 + params.density * 2200000);
+  const pts = formatPts(pointCount ?? 300000 + params.density * 1700000);
   const fname = photo?.name?.replace(/\.[^.]+$/, "") || "subject_01";
 
   const stepLabel: Record<typeof stepMode, string> = {

@@ -26,6 +26,61 @@ const DEFAULT_CRYSTAL: CrystalBounds = {
   marginZ: 3,
 };
 
+// Browser-side decimation cap. Three.js can render ~1M points smoothly with
+// AdditiveBlending on a typical laptop GPU; above that, frame rate craters
+// and slider retunes feel sticky. The full PLY is still what gets engraved —
+// this is purely the on-screen preview. Random-stride sampling preserves the
+// visual character of the cloud (every brightness band stays represented).
+const VIEWER_MAX_POINTS = 600_000;
+
+/**
+ * Decimate a BufferGeometry's position + color attributes down to roughly
+ * `maxPoints` by random index sampling. Returns a NEW geometry — caller is
+ * responsible for disposing both the input (if no longer needed) and output.
+ *
+ * We pick indices uniformly at random rather than every-Nth so the decimated
+ * cloud doesn't show banding artifacts on regular grids. `maxPoints` is a
+ * soft upper bound — actual count is exactly maxPoints unless the source has
+ * fewer.
+ */
+function decimateGeometry(src: THREE.BufferGeometry, maxPoints: number): THREE.BufferGeometry {
+  const posAttr = src.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (!posAttr) return src;
+  const total = posAttr.count;
+  if (total <= maxPoints) return src;
+
+  // Build a random index permutation, take the first `maxPoints`. A typed
+  // array + Fisher-Yates shuffle is plenty fast even at a few M points.
+  const idx = new Uint32Array(total);
+  for (let i = 0; i < total; i++) idx[i] = i;
+  for (let i = total - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+
+  const out = new THREE.BufferGeometry();
+  // PLYLoader returns Float32Array for position/normal/color (colors are
+  // rescaled 0..1), so we can just allocate Float32Arrays without bothering
+  // with the source's typed-array constructor.
+  const pickAttr = (name: string): void => {
+    const attr = src.getAttribute(name) as THREE.BufferAttribute | undefined;
+    if (!attr) return;
+    const itemSize = attr.itemSize;
+    const srcArr = attr.array as ArrayLike<number>;
+    const dst = new Float32Array(maxPoints * itemSize);
+    for (let i = 0; i < maxPoints; i++) {
+      const srcOff = idx[i] * itemSize;
+      const dstOff = i * itemSize;
+      for (let k = 0; k < itemSize; k++) dst[dstOff + k] = srcArr[srcOff + k];
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(dst, itemSize, attr.normalized));
+  };
+  pickAttr("position");
+  pickAttr("color");
+  pickAttr("normal");
+  return out;
+}
+
 /**
  * Loads a PLY file into a BufferGeometry and renders it as a Three.js Points
  * primitive. PLY is the lightest format we emit and the one three.js loads
@@ -38,6 +93,10 @@ const DEFAULT_CRYSTAL: CrystalBounds = {
  * left it. The whole "every slider tick resets the camera to top-right" bug
  * was caused by `<Canvas key={url}>` forcing a full remount on URL change.
  *
+ * Above VIEWER_MAX_POINTS we render a randomly-decimated copy in the browser
+ * to keep slider drags fluid; the on-disk PLY/STL/GLB the user downloads
+ * stays at full density, since that's what the laser actually consumes.
+ *
  * Points come out of the worker in real millimetre coordinates — range is
  * [0, sizeX] × [0, sizeY] × [0, sizeZ] with the image fitting inside
  * (sizeX - 2·marginX, sizeY - 2·marginY). We shift the cloud by half the
@@ -46,6 +105,9 @@ const DEFAULT_CRYSTAL: CrystalBounds = {
  */
 function PointCloud({ url, crystal }: { url: string; crystal: CrystalBounds }) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
+  // Diagnostic: surface the actual rendered/source counts in the console so
+  // we can confirm decimation kicked in when a user reports "viewer laggy".
+  const [renderInfo, setRenderInfo] = useState<{ rendered: number; total: number } | null>(null);
 
   useEffect(() => {
     // Imperative load: we fetch in the background and only swap geom once
@@ -60,9 +122,18 @@ function PointCloud({ url, crystal }: { url: string; crystal: CrystalBounds }) {
           next.dispose();
           return;
         }
+        const total = (next.getAttribute("position") as THREE.BufferAttribute | undefined)?.count ?? 0;
+        const display = total > VIEWER_MAX_POINTS ? decimateGeometry(next, VIEWER_MAX_POINTS) : next;
+        // If we decimated, drop the original geometry's GPU buffers — we
+        // hold onto only the smaller copy. If we didn't, display === next.
+        if (display !== next) next.dispose();
         setGeom((prev) => {
           if (prev) prev.dispose();
-          return next;
+          return display;
+        });
+        setRenderInfo({
+          rendered: (display.getAttribute("position") as THREE.BufferAttribute).count,
+          total,
         });
       },
       undefined,
@@ -76,6 +147,16 @@ function PointCloud({ url, crystal }: { url: string; crystal: CrystalBounds }) {
       cancelled = true;
     };
   }, [url]);
+
+  useEffect(() => {
+    if (!renderInfo) return;
+    if (renderInfo.rendered < renderInfo.total) {
+      console.info(
+        `[point-cloud-viewer] decimated ${renderInfo.total.toLocaleString()} → ` +
+          `${renderInfo.rendered.toLocaleString()} for preview (full file used for export).`,
+      );
+    }
+  }, [renderInfo]);
 
   const object = useMemo(() => {
     if (!geom) return null;

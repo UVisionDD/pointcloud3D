@@ -13,21 +13,22 @@ from pointcloud import CrystalParams
 
 # ---------- Content presets (subject type) ----------
 
-# Presets target ~1.5M–3M points with shallow Z so portraits actually look
-# like portraits instead of stretched totems. Densities are effectively
-# maxed out — we'd rather the worker produce a dense cloud and let the
-# laser software (or the user's slider) cull down, than have to re-queue
-# a job because the result was too sparse.
+# Presets are now layer-height driven: each subject type picks its own
+# layer_height_mm + base_density so the output count emerges from the image
+# (brightness/contrast/gamma actually moves the needle) instead of being
+# pinned to a fixed target. Typical 4 MP photo lands around 600k–1.2M points
+# at default density; pushing base_density up or layer_height down
+# proportionally raises that.
 CONTENT_PRESETS: dict[str, CrystalParams] = {
-    # Faces are small — packing >1M points into the face region needs
-    # max density + lots of layers. Z stays very shallow (0.22) so the
-    # nose and forehead don't protrude into the crystal's upper half.
+    # Faces benefit from finer vertical resolution (smoother forehead/cheek
+    # gradients), so portraits run a tighter layer height. Shallow Z keeps
+    # the nose from poking into the upper half of the crystal.
     "portrait": CrystalParams(
-        target_points=1_500_000,
-        base_density=1.0,
+        target_points=0,
+        base_density=0.20,
         max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=6,
+        layer_height_mm=0.10,
         volumetric_thickness=0.05,
         z_scale=0.22,
         contrast=1.15,
@@ -36,11 +37,11 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Pets are furrier — bump jitter a hair so fur doesn't look banded.
     "pet": CrystalParams(
-        target_points=1_800_000,
-        base_density=1.0,
+        target_points=0,
+        base_density=0.22,
         max_points_per_pixel=15,
         xy_jitter=0.55,
-        z_layers=6,
+        layer_height_mm=0.12,
         volumetric_thickness=0.07,
         z_scale=0.28,
         contrast=1.1,
@@ -48,38 +49,41 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
         depth_gamma=0.9,
     ),
     # Landscapes want more Z spread — horizon depth is the whole selling point.
+    # Slightly coarser layer height since the crystal slab is larger anyway.
     "landscape": CrystalParams(
-        target_points=2_000_000,
-        base_density=1.0,
+        target_points=0,
+        base_density=0.25,
         max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=7,
+        layer_height_mm=0.18,
         volumetric_thickness=0.10,
         z_scale=0.55,
         contrast=1.05,
         gamma=1.0,
         depth_gamma=1.0,
     ),
-    # Objects usually have dark background, effective lum lower — compensate.
+    # Objects usually have dark background, effective lum lower — compensate
+    # by nudging base_density up.
     "object": CrystalParams(
-        target_points=1_300_000,
-        base_density=1.0,
+        target_points=0,
+        base_density=0.22,
         max_points_per_pixel=15,
         xy_jitter=0.5,
-        z_layers=6,
+        layer_height_mm=0.15,
         volumetric_thickness=0.07,
         z_scale=0.3,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.95,
     ),
-    # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z hard.
+    # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z hard
+    # and use a smallish layer height for crisp letterforms.
     "text_logo": CrystalParams(
-        target_points=800_000,
-        base_density=1.0,
+        target_points=0,
+        base_density=0.30,
         max_points_per_pixel=15,
         xy_jitter=0.3,
-        z_layers=5,
+        layer_height_mm=0.10,
         volumetric_thickness=0.03,
         z_scale=0.18,
         contrast=1.5,
@@ -155,6 +159,7 @@ def apply_content_preset(base: CrystalParams, preset_key: str) -> CrystalParams:
         base_density=p.base_density,
         max_points_per_pixel=p.max_points_per_pixel,
         xy_jitter=p.xy_jitter,
+        layer_height_mm=p.layer_height_mm,
         z_layers=p.z_layers,
         volumetric_thickness=p.volumetric_thickness,
         z_scale=p.z_scale,

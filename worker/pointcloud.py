@@ -36,20 +36,33 @@ class CrystalParams:
 
     # Density / distribution.
     # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    # Pushed to 1.0 — the previous 0.8 was still producing thin clouds on
-    # dark-skinned portraits or low-contrast shots where luminance averages
-    # ~0.35 (so per-pixel prob capped out at ~0.28 even before falloff).
-    base_density: float = 1.0
+    # With layer_height_mm driving z_layers (typically 30–60 layers on a 5–8 mm
+    # volumetric slab), keep base_density modest so total counts land in the
+    # 500k–2M range for normal photos. The Bernoulli math is roughly:
+    #   E[points] ≈ pixels × mean(density) × base_density × max_points_per_pixel
+    # so doubling base_density doubles output, and brightness/contrast/gamma
+    # feed directly into mean(density). 0.18 lands a 4 MP portrait at
+    # ~700k–1M after bg removal; bump to 0.4+ for denser clouds.
+    base_density: float = 0.18
     # Max number of points a single pixel can emit across all Z layers.
     max_points_per_pixel: int = 15
-    # Target total point count. When > 0, overrides base_density / mpp /
-    # z_layers clipping with weighted multinomial sampling so output is
-    # ALWAYS ≈ this many points regardless of image size / subject area /
-    # luminance. Set 0 to use the legacy Bernoulli-per-layer path.
-    target_points: int = 1_500_000
+    # Hard target point count. When > 0, switches to weighted multinomial
+    # sampling that emits exactly this many points regardless of image
+    # brightness — useful for batch consistency, NOT for photopoints3d-style
+    # output where count should emerge from the image. Default 0 keeps the
+    # Bernoulli path (count varies with brightness/contrast/gamma sliders).
+    target_points: int = 0
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
-    # Number of Z layers to sample (volumetric thickness in Z).
+    # Layer height in mm — primary control for vertical resolution, mirrors
+    # photopoints3d / industrial subsurface engravers. Smaller = more layers
+    # = finer Z gradient = more points overall. 0.05 mm is professional-grade
+    # fiber spot pitch, 0.15 mm is a balanced default for K9, 0.25 mm is
+    # draft. When > 0, overrides the explicit `z_layers` count below by
+    # computing layers = round(volumetric_thickness_mm / layer_height_mm).
+    layer_height_mm: float = 0.15
+    # Legacy / override: explicit number of Z slabs. Only used when
+    # `layer_height_mm <= 0`; otherwise we derive it from layer_height_mm.
     z_layers: int = 6
     # Cap the longest source image dimension before depth + sampling, so the
     # output point count is predictable. 2500 px ≈ 6 MP, target ~2 M points
@@ -185,7 +198,16 @@ def generate_points(
     vol_thickness_mm = params.volumetric_thickness * inner_z
     z_base = params.margin_z + (inner_z - inner_z * params.z_scale) / 2.0
 
-    layers = max(1, params.z_layers)
+    # Derive layer count from layer_height_mm when supplied. This matches the
+    # photopoints3d UX: user picks a vertical resolution in mm and the output
+    # density emerges from (layers × per-pixel-prob × bright pixels). The
+    # legacy `z_layers` field is only consulted when layer_height_mm <= 0.
+    if params.layer_height_mm > 0:
+        layers = max(1, int(round(vol_thickness_mm / params.layer_height_mm)))
+        print(f"[pointcloud] layer_height={params.layer_height_mm:.3f}mm "
+              f"× thickness={vol_thickness_mm:.2f}mm => {layers} layers")
+    else:
+        layers = max(1, params.z_layers)
     all_points: list[np.ndarray] = []
 
     # Target-driven sampling: draw exactly target_points pixel indices

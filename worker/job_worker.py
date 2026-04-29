@@ -102,6 +102,7 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         intensity_floor=pick("intensity_floor", crystal.intensity_floor),
         layer_falloff=pick("layer_falloff", crystal.layer_falloff),
         target_points=pick("target_points", crystal.target_points),
+        layer_height_mm=pick("layer_height_mm", crystal.layer_height_mm),
         seed=pick("seed", crystal.seed),
     )
 
