@@ -156,10 +156,18 @@ export function AdvancedParams({ options, onChange }: Props) {
             <Num
               label="Base density"
               value={options.base_density}
-              min={0.001}
-              max={0.1}
-              step={0.001}
+              min={0.05}
+              max={1}
+              step={0.01}
               onChange={(v) => update("base_density", v)}
+            />
+            <Num
+              label="Max pts / pixel"
+              value={options.max_points_per_pixel}
+              min={1}
+              max={12}
+              step={1}
+              onChange={(v) => update("max_points_per_pixel", v)}
             />
             <Num
               label="XY jitter"

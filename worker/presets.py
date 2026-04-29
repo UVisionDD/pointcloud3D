@@ -13,20 +13,21 @@ from pointcloud import CrystalParams
 
 # ---------- Content presets (subject type) ----------
 
-# Presets are layer-height driven: each subject type picks its own
-# layer_height_mm + base_density and the count emerges from
-# pixels × tonemapped luminance × base_density × layers. So
-# brightness/contrast/gamma and the layer-height slider are the only knobs
-# that move the total — there is no target boost. base_density values are
-# per-layer Bernoulli scalars, not per-pixel rates.
+# Presets are now layer-height driven: each subject type picks its own
+# layer_height_mm + base_density so the output count emerges from the image
+# (brightness/contrast/gamma actually moves the needle) instead of being
+# pinned to a fixed target. Typical 4 MP photo lands around 600k–1.2M points
+# at default density; pushing base_density up or layer_height down
+# proportionally raises that.
 CONTENT_PRESETS: dict[str, CrystalParams] = {
     # Faces benefit from finer vertical resolution (smoother forehead/cheek
     # gradients), so portraits run a tighter layer height. Shallow Z keeps
     # the nose from poking into the upper half of the crystal.
     "portrait": CrystalParams(
-        base_density=0.013,
+        base_density=0.20,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        layer_height_mm=0.05,
+        layer_height_mm=0.10,
         volumetric_thickness=0.05,
         z_scale=0.22,
         contrast=1.15,
@@ -35,9 +36,10 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     ),
     # Pets are furrier — bump jitter a hair so fur doesn't look banded.
     "pet": CrystalParams(
-        base_density=0.015,
+        base_density=0.22,
+        max_points_per_pixel=15,
         xy_jitter=0.55,
-        layer_height_mm=0.06,
+        layer_height_mm=0.12,
         volumetric_thickness=0.07,
         z_scale=0.28,
         contrast=1.1,
@@ -47,9 +49,10 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # Landscapes want more Z spread — horizon depth is the whole selling point.
     # Slightly coarser layer height since the crystal slab is larger anyway.
     "landscape": CrystalParams(
-        base_density=0.016,
+        base_density=0.25,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        layer_height_mm=0.10,
+        layer_height_mm=0.18,
         volumetric_thickness=0.10,
         z_scale=0.55,
         contrast=1.05,
@@ -59,9 +62,10 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # Objects usually have dark background, effective lum lower — compensate
     # by nudging base_density up.
     "object": CrystalParams(
-        base_density=0.015,
+        base_density=0.22,
+        max_points_per_pixel=15,
         xy_jitter=0.5,
-        layer_height_mm=0.08,
+        layer_height_mm=0.15,
         volumetric_thickness=0.07,
         z_scale=0.3,
         contrast=1.1,
@@ -71,9 +75,10 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # Text/logo is mostly dark pixels w/ dense bright strokes; tighten Z hard
     # and use a smallish layer height for crisp letterforms.
     "text_logo": CrystalParams(
-        base_density=0.020,
+        base_density=0.30,
+        max_points_per_pixel=15,
         xy_jitter=0.3,
-        layer_height_mm=0.05,
+        layer_height_mm=0.10,
         volumetric_thickness=0.03,
         z_scale=0.18,
         contrast=1.5,
@@ -146,6 +151,7 @@ def apply_content_preset(base: CrystalParams, preset_key: str) -> CrystalParams:
     return replace(
         base,
         base_density=p.base_density,
+        max_points_per_pixel=p.max_points_per_pixel,
         xy_jitter=p.xy_jitter,
         layer_height_mm=p.layer_height_mm,
         z_layers=p.z_layers,

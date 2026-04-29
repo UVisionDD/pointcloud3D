@@ -31,7 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--margin-xyz", nargs=3, type=float, default=[3.0, 3.0, 3.0])
 
     # Distribution.
-    p.add_argument("--base-density", type=float, default=0.012)
+    p.add_argument("--base-density", type=float, default=0.35)
+    p.add_argument("--max-points-per-pixel", type=int, default=4)
     p.add_argument("--xy-jitter", type=float, default=0.5)
     p.add_argument("--z-layers", type=int, default=3)
     p.add_argument("--volumetric-thickness", type=float, default=0.08)
@@ -80,6 +81,7 @@ def main() -> None:
         margin_y=args.margin_xyz[1],
         margin_z=args.margin_xyz[2],
         base_density=args.base_density,
+        max_points_per_pixel=args.max_points_per_pixel,
         xy_jitter=args.xy_jitter,
         z_layers=args.z_layers,
         volumetric_thickness=args.volumetric_thickness,
