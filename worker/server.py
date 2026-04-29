@@ -71,6 +71,7 @@ def _opts_from_json(raw: dict[str, Any], workdir: Path) -> PipelineOptions:
         face_strength=float(raw.get("face_strength", 0.8)),
         crystal=crystal,
         point_size_mm=float(raw.get("point_size_mm", 0.08)),
+        rotation=int(raw.get("rotation", 0) or 0),
     )
 
 

@@ -11,10 +11,17 @@ import { PointCloudViewer } from "@/components/point-cloud-viewer";
 import { Wordmark } from "@/components/wordmark";
 
 type PresetKey = "portrait" | "pet" | "landscape" | "object" | "logo";
-type LaserKey = "xtool" | "haotian" | "commarker" | "rocksolid" | "custom";
+// Output format the user wants to download. Drives the format dropdown in
+// the rail and feeds straight into options.formats[]. We deliberately drop
+// the old "Laser machine" picker — the actual lasers are now informational
+// hints under each format option, since most lasers accept the same files.
+type FormatKey = "glb" | "stl" | "dxf" | "ply" | "xyz";
 
 interface Params {
-  density: number;
+  // Layer height in millimetres — the photopoints3d-style primary control
+  // for vertical resolution and overall point count. Smaller layers => more
+  // points and a finer depth gradient. UI range is 0.05..0.50 mm.
+  layerHeight: number;
   depth: number;
   jitter: number;
   pointy: number;
@@ -23,6 +30,11 @@ interface Params {
   contrast: number;
   gamma: number;
   zlayers: number;
+  // Image orientation in degrees (0/90/180/270). Sent to the worker so the
+  // depth model and sampler operate on the rotated pixels. The source pane
+  // also previews the rotation via CSS transform so the user sees the
+  // orientation immediately, before re-running the pipeline.
+  rotation: 0 | 90 | 180 | 270;
   // Crystal bounding box (mm). The red wireframe in the 3D preview draws
   // these exact dimensions; the cloud is scaled to fill (sizeX − 2·marginX,
   // sizeY − 2·marginY, sizeZ − 2·marginZ) so no point can ever sit outside
@@ -49,17 +61,17 @@ const CRYSTAL_PRESETS: Record<Exclude<CrystalKey, "custom">, { x: number; y: num
   k9_70_70_70:  { x: 70, y: 70, z: 70 },
 };
 
-// UI slider defaults per preset. `density` is 0..1 (maps straight to
-// worker base_density). `depth` is 0..2.5 where 1.0 = "normal"; worker
-// z_scale = 0.25 * depth so 1.0 → 0.25 (portrait-shallow), 2.2 → 0.55
-// (landscape-wide). Keep these near the max so the first render looks
-// rich — the user can tone it down from the top.
-const PRESET_PARAMS: Record<PresetKey, Pick<Params, "density" | "depth" | "jitter" | "pointy">> = {
-  portrait:  { density: 0.95, depth: 0.9, jitter: 0.5, pointy: 0.6 },
-  pet:       { density: 1.0,  depth: 1.1, jitter: 0.55, pointy: 0.7 },
-  landscape: { density: 1.0,  depth: 2.2, jitter: 0.5, pointy: 0.4 },
-  object:    { density: 0.95, depth: 1.2, jitter: 0.5, pointy: 0.8 },
-  logo:      { density: 1.0,  depth: 0.7, jitter: 0.3, pointy: 0.9 },
+// UI slider defaults per preset. `layerHeight` is in mm (matches the
+// worker's CrystalParams.layer_height_mm directly). `depth` is 0..2.5 where
+// 1.0 = "normal"; worker z_scale = 0.25 * depth so 1.0 → 0.25
+// (portrait-shallow), 2.2 → 0.55 (landscape-wide). Smaller layer heights
+// are reserved for portraits/text where vertical resolution shows up most.
+const PRESET_PARAMS: Record<PresetKey, Pick<Params, "layerHeight" | "depth" | "jitter" | "pointy">> = {
+  portrait:  { layerHeight: 0.10, depth: 0.9, jitter: 0.5,  pointy: 0.6 },
+  pet:       { layerHeight: 0.12, depth: 1.1, jitter: 0.55, pointy: 0.7 },
+  landscape: { layerHeight: 0.18, depth: 2.2, jitter: 0.5,  pointy: 0.4 },
+  object:    { layerHeight: 0.15, depth: 1.2, jitter: 0.5,  pointy: 0.8 },
+  logo:      { layerHeight: 0.10, depth: 0.7, jitter: 0.3,  pointy: 0.9 },
 };
 
 const PRESET_TO_SERVER: Record<PresetKey, "portrait" | "pet" | "landscape" | "object" | "text_logo"> = {
@@ -70,23 +82,30 @@ const PRESET_TO_SERVER: Record<PresetKey, "portrait" | "pet" | "landscape" | "ob
   logo: "text_logo",
 };
 
-const LASER_TO_SERVER: Record<LaserKey, "xtool_f1_ultra" | "haotian_x1" | "commarker_b4_jpt" | "rock_solid" | "green_dxf"> = {
-  xtool: "xtool_f1_ultra",
-  haotian: "haotian_x1",
-  commarker: "commarker_b4_jpt",
-  rocksolid: "rock_solid",
-  custom: "green_dxf",
-};
+// Format → list of laser machines that accept it. Used as the greyed-out
+// "compatible with" hint in each format dropdown option, replacing the old
+// per-laser dropdown that forced the user to pick hardware they might not
+// own. Most subsurface laser studio software accepts STL or GLB; we surface
+// the canonical examples next to each option so the user can match by
+// memory rather than spec sheet.
+const FORMAT_OPTIONS: { k: FormatKey; label: string; lasers: string }[] = [
+  { k: "glb", label: "GLB", lasers: "xTool F1 Ultra · xTool Creative Space" },
+  { k: "stl", label: "STL", lasers: "Haotian X1 · Commarker B4 · Rock Solid · most CAM tools" },
+  { k: "dxf", label: "DXF", lasers: "Generic green / DPSS lasers · 532 nm pipelines" },
+  { k: "ply", label: "PLY", lasers: "MeshLab · CloudCompare · research / dev viewers" },
+  { k: "xyz", label: "XYZ", lasers: "Plain text — universal fallback for any pipeline" },
+];
 
-const LASER_FORMAT: Record<LaserKey, string> = {
-  xtool: "GLB",
-  haotian: "STL",
-  commarker: "STL",
-  rocksolid: "DXF",
-  custom: "STL",
+// Pick a default crystal size and `laser_preset` slug to send the worker
+// based on the chosen format. Crystal dimensions can still be overridden in
+// "More settings"; this just gives a sensible starting block per format.
+const FORMAT_TO_SERVER_LASER: Record<FormatKey, "xtool_f1_ultra" | "haotian_x1" | "commarker_b4_jpt" | "rock_solid" | "green_dxf"> = {
+  glb: "xtool_f1_ultra",
+  stl: "haotian_x1",
+  dxf: "green_dxf",
+  ply: "xtool_f1_ultra",
+  xyz: "xtool_f1_ultra",
 };
-
-const FORMATS = ["STL", "GLB", "DXF", "PLY", "XYZ"] as const;
 
 function formatPts(n: number) {
   const v = Math.round(n);
@@ -108,10 +127,14 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const router = useRouter();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [preset, setPreset] = useState<PresetKey>("portrait");
-  const [laser, setLaser] = useState<LaserKey>("xtool");
+  // Output format = primary picker. Defaults to GLB since that's the format
+  // xTool's stock software accepts directly; users on STL-based pipelines
+  // (Haotian, Commarker, Rock Solid) flip it from the dropdown.
+  const [outputFormat, setOutputFormat] = useState<FormatKey>("glb");
   const [params, setParams] = useState<Params>({
-    density: 0.95, depth: 0.9, jitter: 0.5, pointy: 0.6, auto: true,
+    layerHeight: 0.10, depth: 0.9, jitter: 0.5, pointy: 0.6, auto: true,
     brightness: 0, contrast: 1, gamma: 1, zlayers: 90,
+    rotation: 0,
     sizeX: 50, sizeY: 50, sizeZ: 80,
     marginX: 3, marginY: 3, marginZ: 3,
     invert: false,
@@ -151,7 +174,6 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   // Generate button on the configure step.
   const [uploadedKey, setUploadedKey] = useState<string | null>(null);
   const [procProgress, setProcProgress] = useState(0);
-  const [selectedFormat, setSelectedFormat] = useState<string>("GLB");
   const [busy, setBusy] = useState(false);
   // URL of the result PLY the 3D viewer loads once the worker finishes.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -290,18 +312,20 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
    * function so both the initial upload and the retune path produce the same
    * payload (minus `reuse_depth_from_job`, which retune adds itself).
    *
-   * UI ranges are friendlier than the raw worker ones — e.g. `density` is 0..1
-   * and we feed it straight into `base_density`, `depth` is 0.4..1.3 and we
-   * scale the default z_scale by it, `zlayers` is 20..120 on the slider but
-   * the sampler only wants 3..8.
+   * UI ranges are friendlier than the raw worker ones — e.g. `layerHeight`
+   * is 0.05..0.50 mm and we feed it straight into `layer_height_mm`,
+   * `depth` is 0..2.5 and we scale the default z_scale by it, `zlayers` is
+   * 20..120 on the slider but the sampler only consults it when
+   * layer_height_mm is 0 (legacy fallback).
    */
   const buildJobOptions = useCallback(() => {
     // Clamp z_scale in [0.05, 1.0]. The 0.25 coefficient is chosen so
     // params.depth=1.0 → zScale=0.25 (shallow-portrait target); a landscape
     // slider at 2.2 → zScale=0.55 which is dramatic without clipping.
     const zScale = Math.max(0.05, Math.min(1.0, 0.25 * params.depth));
-    // Map the 20..120 UI slider to 4..9 real Bernoulli layers. More layers
-    // multiply point count linearly but smooth z banding.
+    // Legacy z_layers field is only consulted by the worker when
+    // layer_height_mm <= 0 — we keep mapping the UI slider in case a future
+    // mode flips back to fixed-layer count.
     const zLayers = Math.max(4, Math.min(9, Math.round(params.zlayers / 13)));
     // "Sharpness" slider — pointier = smaller tet on STL. Inverse mapping so
     // pointy=1 gives the crispest stipple, pointy=0 gives a softer look.
@@ -309,7 +333,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     return {
       formats: Array.from(new Set([
         "ply" as const,
-        selectedFormat.toLowerCase() as "stl" | "glb" | "dxf" | "ply" | "xyz",
+        outputFormat as "stl" | "glb" | "dxf" | "ply" | "xyz",
       ])),
       remove_bg: bgRemoved,
       face_aware: true,
@@ -322,19 +346,19 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       margin_z: params.marginZ,
       // photopoints3d-style Bernoulli: count emerges from layer_height ×
       // base_density × tonemapped luminance, so brightness/contrast/gamma
-      // sliders actually move the point total. Map the 0..1 density slider
-      // to a base_density of ~0.04..0.24 so a 4 MP photo at default settings
-      // lands around 700k–2M depending on subject brightness.
-      base_density: Math.max(0.04, Math.min(0.5, 0.04 + params.density * 0.20)),
+      // sliders actually move the point total.
+      base_density: 0.18,
       max_points_per_pixel: 15,
       target_points: 0,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
-      // Layer height in mm — primary vertical-resolution control. We currently
-      // fix at 0.15 mm (good K9 default); the preset chosen above can override
-      // it (portraits go to 0.10 mm for finer cheek gradients, landscape to
-      // 0.18 mm). Add a slider here once we expose Z resolution to users.
-      layer_height_mm: 0.15,
+      // Layer height (mm) is now driven by the rail slider — smaller layers
+      // mean a finer Z gradient and proportionally more points.
+      layer_height_mm: Math.max(0.05, Math.min(1.0, params.layerHeight)),
       z_layers: zLayers,
+      // Image rotation in 90° steps. Worker rotates the source bytes via PIL
+      // before depth + sampling so the cloud comes out in the correct
+      // orientation regardless of EXIF / camera-saved rotation.
+      rotation: params.rotation,
       sampling_max_side_px: 2500,
       volumetric_thickness: 0.08,
       z_scale: zScale,
@@ -347,11 +371,15 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       intensity_floor: 0.12,
       point_size_mm: pointSizeMm,
       content_preset: PRESET_TO_SERVER[preset],
-      laser_preset: LASER_TO_SERVER[laser],
+      // Laser preset still goes to the server because it carries the default
+      // crystal dimensions; we infer it from the chosen output format. User
+      // crystal-size overrides in the rail still win because pick() in the
+      // worker prefers explicit fields over preset defaults.
+      laser_preset: FORMAT_TO_SERVER_LASER[outputFormat],
       text_lines: lines.filter(Boolean).map((t) => ({ text: t, font_size_px: 64 })),
       seed: 42,
     };
-  }, [params, selectedFormat, bgRemoved, preset, laser, lines]);
+  }, [params, outputFormat, bgRemoved, preset, lines]);
 
   /**
    * Fire a retune job off the current parent. The worker downloads the
@@ -403,7 +431,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     return () => {
       if (retuneTimerRef.current) clearTimeout(retuneTimerRef.current);
     };
-  }, [parentJobId, params, preset, laser, bgRemoved, lines, selectedFormat, requestRetune]);
+  }, [parentJobId, params, preset, outputFormat, bgRemoved, lines, requestRetune]);
 
   // Step 2: fire a `preview_only: true` job once the upload lands, so the
   // user sees the bg-removed matte in the source pane without waiting on a
@@ -476,12 +504,6 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     poll();
     return () => { cancelled = true; clearInterval(interval); };
   }, [bgPreviewJobId]);
-
-  const handleLaserChange = (next: LaserKey) => {
-    setLaser(next);
-    const f = LASER_FORMAT[next];
-    if (f) setSelectedFormat(f);
-  };
 
   // Swap the crystal preset and snap sizeX/Y/Z to the named dimensions. The
   // margin values are preserved — users tend to have one preferred safe-zone
@@ -631,7 +653,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
 
   const ready = stepMode === "ready";
   const subOk = signedIn && plan && plan !== "free";
-  const disabled = !ready || !selectedFormat || busy;
+  const disabled = !ready || !outputFormat || busy;
 
   return (
     <>
@@ -645,7 +667,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       <div className="studio">
         <SettingsRail
           preset={preset} setPreset={setPreset}
-          laser={laser} setLaser={handleLaserChange}
+          outputFormat={outputFormat} setOutputFormat={setOutputFormat}
           crystalKey={crystalKey} setCrystalKey={handleCrystalChange}
           params={params} setParams={setParams}
           lines={lines} setLines={setLines}
@@ -671,14 +693,22 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
             previewUrl={previewUrl}
             pointCount={pointCount}
             retuning={retuning}
+            outputFormat={outputFormat}
+            onRotate={(delta) => {
+              // Step the rotation by ±90° and wrap to [0, 360). Cast back
+              // to the literal union so the param shape stays exact.
+              setParams((p) => {
+                const next = ((p.rotation + delta + 360) % 360) as Params["rotation"];
+                return { ...p, rotation: next };
+              });
+            }}
             crystal={{
               sizeX: params.sizeX, sizeY: params.sizeY, sizeZ: params.sizeZ,
               marginX: params.marginX, marginY: params.marginY, marginZ: params.marginZ,
             }}
           />
           <ExportBar
-            selectedFormat={selectedFormat}
-            setSelectedFormat={setSelectedFormat}
+            outputFormat={outputFormat}
             subOk={!!subOk}
             plan={plan}
             credits={credits}
@@ -766,12 +796,12 @@ function ChevronDown() {
 
 // ---------- Settings rail ----------
 function SettingsRail({
-  preset, setPreset, laser, setLaser, crystalKey, setCrystalKey,
+  preset, setPreset, outputFormat, setOutputFormat, crystalKey, setCrystalKey,
   params, setParams, lines, setLines,
   photo, bgRemoved, setBgRemoved, onReset,
 }: {
   preset: PresetKey; setPreset: (v: PresetKey) => void;
-  laser: LaserKey; setLaser: (v: LaserKey) => void;
+  outputFormat: FormatKey; setOutputFormat: (v: FormatKey) => void;
   crystalKey: CrystalKey; setCrystalKey: (v: CrystalKey) => void;
   params: Params;
   setParams: React.Dispatch<React.SetStateAction<Params>>;
@@ -802,22 +832,26 @@ function SettingsRail({
             { k: "logo", label: "Logo / Text", desc: "Crisp silhouette output", meta: "~600k pts" },
           ]}
         />
+        {/* Output format = the file the user will actually download. The
+            greyed-out `desc` below each option lists the laser machines /
+            tools that consume this format, so the user matches by hardware
+            without having to remember which file each accepts. */}
         <Dropdown
-          label="Laser machine" value={laser}
-          onChange={(v) => setLaser(v as LaserKey)}
-          options={[
-            { k: "xtool", label: "xTool F1 Ultra", desc: "Exports as GLB · 50×50×80 mm", meta: "GLB" },
-            { k: "haotian", label: "Haotian X1", desc: "Exports as STL · 60×60×90 mm", meta: "STL" },
-            { k: "commarker", label: "Commarker B4", desc: "Exports as STL · 40×40×60 mm", meta: "STL" },
-            { k: "rocksolid", label: "Rock Solid C9", desc: "Exports as DXF · 50×50×100 mm", meta: "DXF" },
-            { k: "custom", label: "Custom", desc: "Choose your format manually", meta: "any" },
-          ]}
+          label="Output format" value={outputFormat}
+          onChange={(v) => setOutputFormat(v as FormatKey)}
+          options={FORMAT_OPTIONS.map((o) => ({
+            k: o.k, label: o.label, desc: o.lasers, meta: o.label,
+          }))}
         />
+        {/* Layer height (mm) is the photopoints3d-style primary control —
+            smaller layers stack more times into the crystal's vertical
+            envelope, producing more points and a finer Z gradient. */}
         <Slider
-          label="Point density" value={params.density}
-          set={(v) => sp("density", v)}
-          hint="More points = sharper result, longer engraving time"
-          display={(v) => formatPts(Math.round(300000 + v * 1700000))}
+          label="Layer height" value={params.layerHeight}
+          set={(v) => sp("layerHeight", v)}
+          min={0.05} max={0.50} step={0.01}
+          display={(v) => v.toFixed(2) + " mm"}
+          hint="Smaller layers → more points & a finer depth gradient"
         />
 
         {/* Bg-remove is step 2's key decision, so it lives here — NOT in
@@ -1032,7 +1066,7 @@ function Collapse({ title, children, startOpen = false }: { title: string; child
 function Preview({
   stepMode, params, lines, photo, bgRemoved, bgPreviewUrl, bgPreviewLoading,
   procProgress, onFile, onReset, onContinueFromBg, onGenerate, uploadedKey,
-  busy, previewUrl, pointCount, retuning, crystal,
+  busy, previewUrl, pointCount, retuning, crystal, outputFormat, onRotate,
 }: {
   stepMode: "upload" | "bgremove" | "configure" | "processing" | "ready" | "error";
   params: Params;
@@ -1055,6 +1089,12 @@ function Preview({
     sizeX: number; sizeY: number; sizeZ: number;
     marginX: number; marginY: number; marginZ: number;
   };
+  // Format the user picked in the rail. Drives the cloud-pane footer
+  // "download" stat + the export button label.
+  outputFormat: FormatKey;
+  // Rotate the source photo 90° in the given direction. Only meaningful
+  // once a photo is loaded; the parent owns the rotation state.
+  onRotate: (delta: 90 | -90) => void;
 }) {
   const [srcView, setSrcView] = useState<"photo" | "depth">("photo");
   const ready = stepMode === "ready";
@@ -1063,9 +1103,11 @@ function Preview({
   // crystal bounds while they dial dimensions in the rail. Once ready,
   // the same viewer gets the PLY URL and the cloud fills the box.
   const showWireframeViewer = photo && stepMode !== "upload" && stepMode !== "error";
-  // Prefer the worker's real point count once we have it; fall back to the
-  // slider-based estimate until the cloud arrives.
-  const pts = formatPts(pointCount ?? 300000 + params.density * 1700000);
+  // Prefer the worker's real point count once we have it; fall back to a
+  // very rough layer-height-based estimate until the cloud arrives. The
+  // actual count from the Bernoulli sampler depends on tonemap + image
+  // content, so this is just "something to show" pre-render.
+  const pts = formatPts(pointCount ?? Math.round(60_000 / Math.max(0.05, params.layerHeight)));
   const fname = photo?.name?.replace(/\.[^.]+$/, "") || "subject_01";
 
   const stepLabel: Record<typeof stepMode, string> = {
@@ -1086,10 +1128,19 @@ function Preview({
             <div className="chrome-dots"><i /><i /><i /></div>
             <span className="mono muted" style={{ fontSize: 10 }}>source</span>
           </div>
+          {/* Right-side controls. We render a placeholder span pre-upload so
+              the chrome's intrinsic height is identical before and after a
+              photo loads — the buttons the empty state was missing were
+              what made the header "grow" on upload. */}
           {photo ? (
-            <div className="view-tabs">
-              <button className={srcView === "photo" ? "on" : ""} onClick={() => setSrcView("photo")}>Photo</button>
-              <button className={srcView === "depth" ? "on" : ""} onClick={() => setSrcView("depth")} disabled={!ready}>Depth</button>
+            <div className="chrome-r" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {srcView === "photo" && (
+                <RotateButtons rotation={params.rotation} onRotate={onRotate} />
+              )}
+              <div className="view-tabs">
+                <button className={srcView === "photo" ? "on" : ""} onClick={() => setSrcView("photo")}>Photo</button>
+                <button className={srcView === "depth" ? "on" : ""} onClick={() => setSrcView("depth")} disabled={!ready}>Depth</button>
+              </div>
             </div>
           ) : (
             <span className="mono muted" style={{ fontSize: 10 }}>{stepLabel[stepMode]}</span>
@@ -1104,6 +1155,7 @@ function Preview({
               bgRemoved={bgRemoved}
               bgPreviewUrl={bgPreviewUrl}
               bgPreviewLoading={bgPreviewLoading}
+              rotation={params.rotation}
             />
           ) : (
             <DepthView />
@@ -1248,21 +1300,15 @@ function Preview({
           <div className="pane-foot">
             <div className="stat-grp">
               <Stat k="points" v={ready ? pts : "—"} />
-              <Stat k="format" v={ready ? "ply · preview" : "—"} />
+              {/* Always show what the user will download. Preview is always
+                  PLY (lightest format that renders in three.js); the Export
+                  button at the bottom hands back the format chosen in the
+                  rail dropdown. */}
+              <Stat
+                k="download"
+                v={ready ? `${outputFormat.toUpperCase()} (preview: PLY)` : "—"}
+              />
             </div>
-            <button
-              className="rail-reset mono"
-              disabled={!ready}
-              style={{ opacity: ready ? 1 : 0.4 }}
-              onClick={() => {
-                // View full-screen by opening the raw signed PLY in a new
-                // tab — handy for debugging and lets users inspect before
-                // they pay to export.
-                if (previewUrl) window.open(previewUrl, "_blank");
-              }}
-            >
-              open raw ↗
-            </button>
           </div>
         )}
       </div>
@@ -1312,13 +1358,79 @@ function UploadZone({ onFile }: { onFile: (f: File) => void }) {
   );
 }
 
+/**
+ * Two small icon buttons in the source-pane chrome that step the rotation
+ * by ±90°. The actual rotation lives in `params.rotation` so the worker
+ * receives it on the next retune; we apply a CSS transform to the photo
+ * for instant visual feedback.
+ *
+ * The numeric badge ("90°", "180°", …) only renders when rotation ≠ 0 so
+ * the chrome doesn't gain visual weight in the default case.
+ */
+function RotateButtons({
+  rotation, onRotate,
+}: {
+  rotation: 0 | 90 | 180 | 270;
+  onRotate: (delta: 90 | -90) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 4,
+        padding: 2, borderRadius: 4,
+        background: "rgba(255,255,255,0.04)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onRotate(-90)}
+        title="Rotate left 90°"
+        aria-label="Rotate left 90°"
+        style={{
+          background: "transparent", border: "none", cursor: "pointer",
+          color: "currentColor", padding: 3, lineHeight: 0,
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 6 H10 A4 4 0 0 1 14 10 V12" />
+          <path d="M6 4 L4 6 L6 8" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={() => onRotate(90)}
+        title="Rotate right 90°"
+        aria-label="Rotate right 90°"
+        style={{
+          background: "transparent", border: "none", cursor: "pointer",
+          color: "currentColor", padding: 3, lineHeight: 0,
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 6 H6 A4 4 0 0 0 2 10 V12" />
+          <path d="M10 4 L12 6 L10 8" />
+        </svg>
+      </button>
+      {rotation !== 0 && (
+        <span className="mono muted" style={{ fontSize: 10, paddingRight: 4 }}>
+          {rotation}°
+        </span>
+      )}
+    </div>
+  );
+}
+
 function PhotoView({
-  photo, bgRemoved, bgPreviewUrl, bgPreviewLoading,
+  photo, bgRemoved, bgPreviewUrl, bgPreviewLoading, rotation,
 }: {
   photo: { previewUrl: string };
   bgRemoved: boolean;
   bgPreviewUrl: string | null;
   bgPreviewLoading: boolean;
+  // Rotation in degrees (0/90/180/270). Applied as a CSS transform so the
+  // user sees the result instantly; the worker re-runs depth on the
+  // rotated bytes once they retune.
+  rotation: 0 | 90 | 180 | 270;
 }) {
   // If the user has bg-remove on AND we've got a server-rendered matte, show
   // it. Otherwise fall back to the original object-URL — gives a snappy
@@ -1333,7 +1445,18 @@ function PhotoView({
     <div className="src-view">
       <div className="src-frame" style={{ background: frameBg, position: "relative" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={src} alt="source" />
+        <img
+          src={src}
+          alt="source"
+          style={{
+            transform: `rotate(${rotation}deg)`,
+            transition: "transform 200ms ease",
+            // 90/270 swap aspect ratio — letting `object-fit: contain` on
+            // the parent handle scaling means the rotated image still fits
+            // the frame without overflow.
+            transformOrigin: "center center",
+          }}
+        />
         <CornerTicks />
         {bgRemoved && !bgPreviewUrl && bgPreviewLoading && (
           // Loading overlay — U²-Net runs in a few seconds but we still want
@@ -1567,11 +1690,15 @@ function Stat({ k, v }: { k: string; v: string }) {
 }
 
 // ---------- Export bar ----------
+// Single source of truth for the download format is the rail's "Output
+// format" dropdown — this bar just tells the user what they're about to
+// pay for, and the price. The old chip selector that lived here doubled
+// up with the dropdown above and forced the worker to render every
+// format every time; both gone now.
 function ExportBar({
-  selectedFormat, setSelectedFormat, subOk, plan, credits, onExport, disabled,
+  outputFormat, subOk, plan, credits, onExport, disabled,
 }: {
-  selectedFormat: string;
-  setSelectedFormat: (f: string) => void;
+  outputFormat: FormatKey;
   subOk: boolean;
   plan: string | null;
   credits: number;
@@ -1582,19 +1709,12 @@ function ExportBar({
     <div className="export-bar">
       <div className="eb-left">
         <span className="mono muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-          output formats
+          download as
         </span>
         <div className="fmt-chips">
-          {FORMATS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={`fmt-chip${selectedFormat === f ? " on" : ""}`}
-              onClick={() => setSelectedFormat(f)}
-            >
-              <span className="mono">{f}</span>
-            </button>
-          ))}
+          <span className="fmt-chip on" aria-disabled>
+            <span className="mono">{outputFormat.toUpperCase()}</span>
+          </span>
         </div>
       </div>
       <div className="eb-right">
@@ -1617,7 +1737,7 @@ function ExportBar({
           disabled={disabled}
           onClick={onExport}
         >
-          {subOk ? "Export →" : "Pay & export →"}
+          {subOk ? `Export ${outputFormat.toUpperCase()} →` : `Pay & export ${outputFormat.toUpperCase()} →`}
         </button>
       </div>
     </div>

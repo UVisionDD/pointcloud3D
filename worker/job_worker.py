@@ -139,6 +139,10 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         crystal=crystal,
         text_overlay=text_overlay,
         point_size_mm=float(opts_raw.get("point_size_mm", 0.08)),
+        # User-chosen rotation in 90° steps (clockwise). Pipeline rotates
+        # the source pixels — fresh path before depth inference, retune
+        # path as a delta against the parent's cached rotation.
+        rotation=int(opts_raw.get("rotation", 0) or 0),
     )
 
 
@@ -219,6 +223,18 @@ def process_job(job: dict) -> None:
                     f"exports/{user_id}/{reuse_parent}/image_rgb.npy",
                     cache_dir / "image_rgb.npy",
                 )
+                # meta.json carries the rotation used by the parent job so
+                # the pipeline can compute a delta if the user spun the
+                # dial since. Older jobs (pre-rotation) don't have it; the
+                # pipeline treats absence as "parent rotation = 0".
+                try:
+                    download_to_path(
+                        f"exports/{user_id}/{reuse_parent}/meta.json",
+                        cache_dir / "meta.json",
+                    )
+                except Exception:
+                    print(f"[worker] retune: no meta.json on parent {reuse_parent} "
+                          f"(pre-rotation cache)")
                 opts.reuse_depth_from_dir = cache_dir
                 opts.image_path = None
                 print(f"[worker] retune: reusing depth from job {reuse_parent}")
@@ -264,6 +280,15 @@ def process_job(job: dict) -> None:
                     cache_dir / "image_rgb.npy",
                     "application/octet-stream",
                 )
+                # meta.json records the rotation that's baked into the cache
+                # so a child retune can rotate by the delta instead of having
+                # to re-run the depth model just to flip the cloud.
+                if (cache_dir / "meta.json").exists():
+                    upload_file(
+                        f"exports/{user_id}/{job_id}/meta.json",
+                        cache_dir / "meta.json",
+                        "application/json",
+                    )
 
         # Record the real point count on the job row so the UI can stop
         # guessing from the slider and show the true number.

@@ -74,6 +74,13 @@ class PipelineOptions:
     # STL point size.
     point_size_mm: float = 0.08
 
+    # Source-image rotation in 90° steps (clockwise). The web UI shows the
+    # rotation as a CSS transform on the source pane; the worker applies the
+    # *same* rotation to the pixels here so the depth model and sampler see
+    # the user-chosen orientation. Anything that's not a multiple of 90° is
+    # snapped to the nearest one — the sampler assumes axis-aligned grids.
+    rotation: int = 0
+
     # Fast-path: if `reuse_depth_from_dir` points at a directory containing
     # depth.npy + image_rgb.npy (saved by a prior run), skip bg removal, depth
     # inference, and face-aware enhancement. Only the sampling + export stages
@@ -94,9 +101,15 @@ class PipelineResult:
 
 
 def run_pipeline(opts: PipelineOptions) -> PipelineResult:
+    import json as _json
+
     from exporters import EXPORTERS
 
     timings: dict[str, float] = {}
+
+    # Snap rotation to a multiple of 90° (clockwise). The UI only ever sends
+    # 0/90/180/270 but defending against bad input is cheap.
+    requested_rotation = int(round((opts.rotation or 0) / 90.0)) * 90 % 360
 
     # --- Fast path: reuse cached image_rgb + depth from an earlier job ---
     # The retune endpoint uses this. Everything up to (and including) depth
@@ -106,6 +119,7 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
         cache = Path(opts.reuse_depth_from_dir)
         image_path = cache / "image_rgb.npy"
         depth_path = cache / "depth.npy"
+        meta_path = cache / "meta.json"
         if not image_path.exists() or not depth_path.exists():
             raise FileNotFoundError(
                 f"reuse_depth_from_dir={cache} is missing image_rgb.npy or depth.npy"
@@ -113,6 +127,26 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
         t0 = time.perf_counter()
         image_rgb = np.load(image_path)
         depth = np.load(depth_path)
+        # Cached arrays are stored at whatever rotation the parent ran with.
+        # If the user has spun the dial since, rotate both arrays by the
+        # delta — np.rot90 is essentially free (~1ms on a 2500px image) so
+        # it's much cheaper than re-running the depth model just for a flip.
+        cached_rotation = 0
+        if meta_path.exists():
+            try:
+                meta = _json.loads(meta_path.read_text())
+                cached_rotation = int(meta.get("rotation", 0)) % 360
+            except Exception as e:  # malformed json, missing key, etc.
+                print(f"[pipeline] cache meta.json unreadable ({e}); assuming rotation=0")
+        delta_rotation = (requested_rotation - cached_rotation) % 360
+        if delta_rotation != 0:
+            # np.rot90(k) does k counter-clockwise turns. Our convention is
+            # clockwise degrees, so a +90° clockwise rotation = k=-1.
+            k = -(delta_rotation // 90)
+            image_rgb = np.ascontiguousarray(np.rot90(image_rgb, k=k))
+            depth = np.ascontiguousarray(np.rot90(depth, k=k))
+            print(f"[pipeline] retune rotated cache by {delta_rotation}° "
+                  f"(parent {cached_rotation}° → child {requested_rotation}°)")
         timings["depth_cache_load_ms"] = (time.perf_counter() - t0) * 1000
         print(f"[pipeline] loaded cached depth+image from {cache} "
               f"in {timings['depth_cache_load_ms']:.0f} ms "
@@ -126,6 +160,16 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
         else:
             raise ValueError("Must provide image or image_path in PipelineOptions.")
         print(f"[pipeline] source image: {image.size[0]}x{image.size[1]}")
+
+        # --- Apply user rotation BEFORE depth inference ---
+        # Rotating after depth would smear the model's output across pixel
+        # boundaries; the model is also approximately rotation-equivariant
+        # for relative depth, so doing it here keeps the cloud crisp.
+        # PIL.rotate uses counter-clockwise positive angles; we want CW.
+        if requested_rotation != 0:
+            image = image.rotate(-requested_rotation, expand=True)
+            print(f"[pipeline] rotated source by {requested_rotation}° "
+                  f"=> {image.size[0]}x{image.size[1]}")
 
         # --- Optional downsample to keep point count predictable ---
         max_side = opts.crystal.sampling_max_side_px
@@ -209,7 +253,14 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
             cache_dir.mkdir(parents=True, exist_ok=True)
             np.save(cache_dir / "image_rgb.npy", image_rgb)
             np.save(cache_dir / "depth.npy", depth)
-            print(f"[pipeline] cached depth+image to {cache_dir}")
+            # Stash the rotation that was baked into the cache so a retune
+            # job with a *different* rotation can compute the delta and apply
+            # np.rot90 without re-running the depth model.
+            (cache_dir / "meta.json").write_text(
+                _json.dumps({"rotation": requested_rotation}),
+            )
+            print(f"[pipeline] cached depth+image to {cache_dir} "
+                  f"(rotation={requested_rotation}°)")
 
     # --- Point cloud ---
     t0 = time.perf_counter()

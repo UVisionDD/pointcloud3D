@@ -42,6 +42,16 @@ export const jobOptionsSchema = z.object({
   volumetric_thickness: z.number().min(0).max(1).default(0.08),
   z_scale: z.number().min(0).max(1).default(0.25),
 
+  // Source-image rotation in 90° steps. Worker rotates the bytes via PIL
+  // before the depth model and sampler run, so the cloud comes out in the
+  // user-chosen orientation regardless of EXIF / camera-saved orientation.
+  // Limited to multiples of 90° because the sampler only assumes axis-
+  // aligned grids; arbitrary angles would need a re-sample of the depth
+  // map and re-tracing of all the per-pixel point candidates.
+  rotation: z
+    .union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])
+    .default(0),
+
   // Tonemap.
   brightness: z.number().min(-1).max(1).default(0),
   contrast: z.number().min(0).max(3).default(1),

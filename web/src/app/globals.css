@@ -323,6 +323,13 @@ body.studio-body { overflow: hidden; }
   background: var(--bg-card); border-bottom: 1px solid var(--line);
   padding: 7px 12px; display: flex; align-items: center;
   justify-content: space-between; gap: 10px; flex-shrink: 0;
+  /* Keep the chrome height identical whether or not a photo is loaded.
+     Without this min-height the empty-state right side is just a tiny
+     `mono muted` label, while the loaded state stacks rotate buttons +
+     view-tabs and ends up ~6px taller — the user sees the header "grow"
+     on upload. The height matches the loaded-state padding (3px on the
+     button) plus 13px icon + 7px chrome padding × 2 = 30px. */
+  min-height: 30px; box-sizing: border-box;
 }
 .chrome-l      { display: flex; align-items: center; gap: 8px; }
 .chrome-dots   { display: flex; gap: 4px; }
