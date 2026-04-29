@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import tempfile
@@ -37,6 +38,45 @@ import db
 POLL_INTERVAL_SECONDS = float(os.environ.get("WORKER_POLL_INTERVAL", "2.0"))
 WORKER_ID = os.environ.get("WORKER_ID", socket.gethostname())
 KEEP_RUNNING = True
+
+
+def _free_gb() -> float:
+    """Disk free (in GB) on the partition that holds the temp dir."""
+    return shutil.disk_usage(tempfile.gettempdir()).free / (1024 ** 3)
+
+
+def _sweep_stale_workdirs() -> None:
+    """Remove any job-* / preview-* dirs left behind by a prior crashed run.
+
+    Python's `tempfile.TemporaryDirectory` cleans up on context exit, but if
+    the worker process is hard-killed (SIGKILL, OOM, kernel panic, the user
+    pulling power) the cleanup never runs. Without this sweep, leaked work
+    dirs accumulate at ~hundreds of MB each and can fill the disk over time.
+    Running this once at startup is the belt-and-suspenders.
+    """
+    tmp = Path(tempfile.gettempdir())
+    freed_bytes = 0
+    removed = 0
+    try:
+        entries = list(tmp.iterdir())
+    except OSError as e:
+        print(f"[worker] sweep: cannot read {tmp}: {e}")
+        return
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        if not (entry.name.startswith("job-") or entry.name.startswith("preview-")):
+            continue
+        try:
+            size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
+        except Exception:
+            size = 0
+        shutil.rmtree(entry, ignore_errors=True)
+        freed_bytes += size
+        removed += 1
+    if removed:
+        print(f"[worker] swept {removed} stale workdir(s), "
+              f"freed {freed_bytes / 1e9:.2f} GB")
 
 
 def _signal_handler(signum, _frame):
@@ -197,6 +237,10 @@ def process_job(job: dict) -> None:
 
             key = f"exports/{user_id}/{job_id}/bg_preview.png"
             upload_file(key, out, "image/png")
+            try:
+                out.unlink()
+            except OSError:
+                pass
             db.mark_done(job_id, {"bg_preview": key}, {"preview_only": 1})
             return
 
@@ -256,38 +300,46 @@ def process_job(job: dict) -> None:
         # Upload each export under exports/{user_id}/{job_id}/result.{fmt}.
         # Always also upload a PLY so the in-browser viewer has something
         # to load, even if the user only asked for STL/DXF.
+        # NOTE: we unlink each local export the moment its R2 upload returns,
+        # so peak disk during the upload phase is bounded by the largest
+        # single export (~hundreds of MB) instead of the sum of all formats
+        # (~GBs for dense clouds). The temp dir context manager would clean
+        # them eventually, but only after the *whole* job finishes.
         result_keys: dict[str, str] = {}
         for fmt, path in result.outputs.items():
             key = f"exports/{user_id}/{job_id}/result.{fmt}"
             upload_file(key, path, CONTENT_TYPES.get(fmt, "application/octet-stream"))
             result_keys[fmt] = key
+            try:
+                path.unlink()
+            except OSError:
+                pass  # workdir cleanup will catch it
 
         # Upload the depth cache so children of this job can retune without
         # paying the ML cost again. Only do this on full runs — retunes
         # reuse the parent's cache, and uploading a copy per retune would
-        # be wasteful.
+        # be wasteful. Each cache file is also unlinked right after upload
+        # so the depth.npy + image_rgb.npy (~30 MB combined for 4 MP) don't
+        # linger past their R2 round-trip.
         if not reuse_parent:
             cache_dir = workdir / "depth_cache"
             if (cache_dir / "depth.npy").exists():
-                upload_file(
-                    f"exports/{user_id}/{job_id}/depth.npy",
-                    cache_dir / "depth.npy",
-                    "application/octet-stream",
-                )
-                upload_file(
-                    f"exports/{user_id}/{job_id}/image_rgb.npy",
-                    cache_dir / "image_rgb.npy",
-                    "application/octet-stream",
-                )
-                # meta.json records the rotation that's baked into the cache
-                # so a child retune can rotate by the delta instead of having
-                # to re-run the depth model just to flip the cloud.
-                if (cache_dir / "meta.json").exists():
-                    upload_file(
-                        f"exports/{user_id}/{job_id}/meta.json",
-                        cache_dir / "meta.json",
-                        "application/json",
-                    )
+                for fname, ct in (
+                    ("depth.npy", "application/octet-stream"),
+                    ("image_rgb.npy", "application/octet-stream"),
+                    # meta.json records the rotation that's baked into the
+                    # cache so a child retune can rotate by the delta
+                    # instead of re-running the depth model.
+                    ("meta.json", "application/json"),
+                ):
+                    src = cache_dir / fname
+                    if not src.exists():
+                        continue
+                    upload_file(f"exports/{user_id}/{job_id}/{fname}", src, ct)
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
 
         # Record the real point count on the job row so the UI can stop
         # guessing from the slider and show the true number.
@@ -301,6 +353,10 @@ def process_job(job: dict) -> None:
 
 
 def main() -> None:
+    # Reclaim any disk left behind by a previous crashed run before we start
+    # claiming new jobs. Idempotent and cheap when there's nothing to sweep.
+    _sweep_stale_workdirs()
+    print(f"[worker {WORKER_ID}] disk free: {_free_gb():.1f} GB")
     print(f"[worker {WORKER_ID}] warming up depth model...")
     load_depth_model()  # pre-load once so the first job isn't slow.
     print(f"[worker {WORKER_ID}] polling every {POLL_INTERVAL_SECONDS}s")
@@ -317,10 +373,10 @@ def main() -> None:
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        print(f"[worker] claimed job {job['id']}")
+        print(f"[worker] claimed job {job['id']} (disk free: {_free_gb():.1f} GB)")
         try:
             process_job(job)
-            print(f"[worker] job {job['id']} done")
+            print(f"[worker] job {job['id']} done (disk free: {_free_gb():.1f} GB)")
         except BaseException as e:  # noqa: BLE001 — intentional: catch SystemExit too
             # rembg etc. can raise SystemExit when a backend is missing, which
             # would otherwise take down the whole worker. Mark the job failed
