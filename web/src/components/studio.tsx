@@ -19,8 +19,8 @@ type FormatKey = "glb" | "stl" | "dxf" | "ply" | "xyz";
 
 interface Params {
   // Layer height in millimetres — the photopoints3d-style primary control
-  // for vertical resolution and overall point count. Smaller layers => more
-  // points and a finer depth gradient. UI range is 0.05..0.50 mm.
+  // for vertical resolution and overall point count. Count is linear in
+  // 1/layer_height. UI range is 0.01..0.30 mm.
   layerHeight: number;
   depth: number;
   jitter: number;
@@ -66,12 +66,14 @@ const CRYSTAL_PRESETS: Record<Exclude<CrystalKey, "custom">, { x: number; y: num
 // 1.0 = "normal"; worker z_scale = 0.25 * depth so 1.0 → 0.25
 // (portrait-shallow), 2.2 → 0.55 (landscape-wide). Smaller layer heights
 // are reserved for portraits/text where vertical resolution shows up most.
+// Values align with worker/presets.py CONTENT_PRESETS so the UI estimate
+// and the worker's actual count agree.
 const PRESET_PARAMS: Record<PresetKey, Pick<Params, "layerHeight" | "depth" | "jitter" | "pointy">> = {
-  portrait:  { layerHeight: 0.10, depth: 0.9, jitter: 0.5,  pointy: 0.6 },
-  pet:       { layerHeight: 0.12, depth: 1.1, jitter: 0.55, pointy: 0.7 },
-  landscape: { layerHeight: 0.18, depth: 2.2, jitter: 0.5,  pointy: 0.4 },
-  object:    { layerHeight: 0.15, depth: 1.2, jitter: 0.5,  pointy: 0.8 },
-  logo:      { layerHeight: 0.10, depth: 0.7, jitter: 0.3,  pointy: 0.9 },
+  portrait:  { layerHeight: 0.05, depth: 0.9, jitter: 0.5,  pointy: 0.6 },
+  pet:       { layerHeight: 0.06, depth: 1.1, jitter: 0.55, pointy: 0.7 },
+  landscape: { layerHeight: 0.10, depth: 2.2, jitter: 0.5,  pointy: 0.4 },
+  object:    { layerHeight: 0.08, depth: 1.2, jitter: 0.5,  pointy: 0.8 },
+  logo:      { layerHeight: 0.05, depth: 0.7, jitter: 0.3,  pointy: 0.9 },
 };
 
 const PRESET_TO_SERVER: Record<PresetKey, "portrait" | "pet" | "landscape" | "object" | "text_logo"> = {
@@ -313,7 +315,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
    * payload (minus `reuse_depth_from_job`, which retune adds itself).
    *
    * UI ranges are friendlier than the raw worker ones — e.g. `layerHeight`
-   * is 0.05..0.50 mm and we feed it straight into `layer_height_mm`,
+   * is 0.01..0.30 mm and we feed it straight into `layer_height_mm`,
    * `depth` is 0..2.5 and we scale the default z_scale by it, `zlayers` is
    * 20..120 on the slider but the sampler only consults it when
    * layer_height_mm is 0 (legacy fallback).
@@ -344,16 +346,16 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       margin_x: params.marginX,
       margin_y: params.marginY,
       margin_z: params.marginZ,
-      // photopoints3d-style Bernoulli: count emerges from layer_height ×
-      // base_density × tonemapped luminance, so brightness/contrast/gamma
-      // sliders actually move the point total.
-      base_density: 0.18,
-      max_points_per_pixel: 15,
-      target_points: 0,
+      // Pure photopoints3d-style Bernoulli: count emerges from
+      //   pixels × tonemapped luminance × base_density × layers
+      // No target boost, no per-pixel cap — only brightness/contrast/gamma
+      // and layer_height move the total. base_density is the absolute scale.
+      base_density: 0.012,
       xy_jitter: Math.max(0, Math.min(2, params.jitter)),
-      // Layer height (mm) is now driven by the rail slider — smaller layers
-      // mean a finer Z gradient and proportionally more points.
-      layer_height_mm: Math.max(0.05, Math.min(1.0, params.layerHeight)),
+      // Layer height (mm) is the primary point-count driver — count is
+      // linear in 1/layer_height because each (pixel, layer) is an
+      // independent Bernoulli draw.
+      layer_height_mm: Math.max(0.01, Math.min(0.30, params.layerHeight)),
       z_layers: zLayers,
       // Image rotation in 90° steps. Worker rotates the source bytes via PIL
       // before depth + sampling so the cloud comes out in the correct
@@ -825,11 +827,11 @@ function SettingsRail({
           label="Photo type" value={preset}
           onChange={(v) => setPreset(v as PresetKey)}
           options={[
-            { k: "portrait", label: "Portrait", desc: "Face-aware depth enhancement", meta: "~1.2M pts" },
-            { k: "pet", label: "Pet", desc: "Detail for fur & eyes", meta: "~1.5M pts" },
-            { k: "landscape", label: "Landscape", desc: "Horizon-weighted depth", meta: "~1.8M pts" },
-            { k: "object", label: "Object", desc: "Sharp edges & hard surfaces", meta: "~900k pts" },
-            { k: "logo", label: "Logo / Text", desc: "Crisp silhouette output", meta: "~600k pts" },
+            { k: "portrait", label: "Portrait", desc: "Face-aware depth enhancement", meta: "fine layers" },
+            { k: "pet", label: "Pet", desc: "Detail for fur & eyes", meta: "fine layers" },
+            { k: "landscape", label: "Landscape", desc: "Horizon-weighted depth", meta: "wide depth" },
+            { k: "object", label: "Object", desc: "Sharp edges & hard surfaces", meta: "balanced" },
+            { k: "logo", label: "Logo / Text", desc: "Crisp silhouette output", meta: "tight Z" },
           ]}
         />
         {/* Output format = the file the user will actually download. The
@@ -849,8 +851,8 @@ function SettingsRail({
         <Slider
           label="Layer height" value={params.layerHeight}
           set={(v) => sp("layerHeight", v)}
-          min={0.05} max={0.50} step={0.01}
-          display={(v) => v.toFixed(2) + " mm"}
+          min={0.01} max={0.30} step={0.005}
+          display={(v) => v.toFixed(3) + " mm"}
           hint="Smaller layers → more points & a finer depth gradient"
         />
 
@@ -1107,7 +1109,10 @@ function Preview({
   // very rough layer-height-based estimate until the cloud arrives. The
   // actual count from the Bernoulli sampler depends on tonemap + image
   // content, so this is just "something to show" pre-render.
-  const pts = formatPts(pointCount ?? Math.round(60_000 / Math.max(0.05, params.layerHeight)));
+  // Estimate ~700k pts at 0.03 mm layer height, scaling linearly with
+  // 1/layer_height since each layer fires an independent Bernoulli draw.
+  // 21000 / 0.03 ≈ 700k; 21000 / 0.10 ≈ 210k; 21000 / 0.30 ≈ 70k.
+  const pts = formatPts(pointCount ?? Math.round(21_000 / Math.max(0.01, params.layerHeight)));
   const fname = photo?.name?.replace(/\.[^.]+$/, "") || "subject_01";
 
   const stepLabel: Record<typeof stepMode, string> = {

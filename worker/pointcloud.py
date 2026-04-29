@@ -35,32 +35,24 @@ class CrystalParams:
     margin_z: float = 3.0
 
     # Density / distribution.
-    # Probability (0-1) that a fully-white pixel emits a point at base layer.
-    # With layer_height_mm driving z_layers (typically 30–60 layers on a 5–8 mm
-    # volumetric slab), keep base_density modest so total counts land in the
-    # 500k–2M range for normal photos. The Bernoulli math is roughly:
-    #   E[points] ≈ pixels × mean(density) × base_density × max_points_per_pixel
-    # so doubling base_density doubles output, and brightness/contrast/gamma
-    # feed directly into mean(density). 0.18 lands a 4 MP portrait at
-    # ~700k–1M after bg removal; bump to 0.4+ for denser clouds.
-    base_density: float = 0.18
-    # Max number of points a single pixel can emit across all Z layers.
-    max_points_per_pixel: int = 15
-    # Hard target point count. When > 0, switches to weighted multinomial
-    # sampling that emits exactly this many points regardless of image
-    # brightness — useful for batch consistency, NOT for photopoints3d-style
-    # output where count should emerge from the image. Default 0 keeps the
-    # Bernoulli path (count varies with brightness/contrast/gamma sliders).
-    target_points: int = 0
+    # Per-layer Bernoulli probability scalar. Each (pixel, layer) draws a
+    # Bernoulli(density × base_density × falloff). Total expected count is
+    #   E[points] ≈ pixels × mean(density) × base_density × layers × falloff_avg
+    # where layers = volumetric_thickness_mm / layer_height_mm, so smaller
+    # layer_height genuinely lifts the count (linear in 1/layer_height) and
+    # brightness/contrast/gamma feed mean(density) so the tonemap sliders
+    # also move the total. 0.012 lands a 4 MP portrait at ~0.03 mm in the
+    # 500k–1M range after bg removal; bump to ~0.025 for denser clouds.
+    base_density: float = 0.012
     # Random XY jitter (in fraction of pixel spacing) to break grid artifacts.
     xy_jitter: float = 0.5
-    # Layer height in mm — primary control for vertical resolution, mirrors
-    # photopoints3d / industrial subsurface engravers. Smaller = more layers
-    # = finer Z gradient = more points overall. 0.05 mm is professional-grade
-    # fiber spot pitch, 0.15 mm is a balanced default for K9, 0.25 mm is
-    # draft. When > 0, overrides the explicit `z_layers` count below by
-    # computing layers = round(volumetric_thickness_mm / layer_height_mm).
-    layer_height_mm: float = 0.15
+    # Layer height in mm — the primary control for both vertical resolution
+    # AND total point count. Smaller layer height => more layers => more
+    # points (linear). UI range is 0.01–0.30 mm: 0.01 is industrial-fiber
+    # pitch, 0.03 is a fine portrait setting, 0.10 is a balanced default,
+    # 0.30 is a draft. When > 0, overrides `z_layers` by computing
+    # layers = round(volumetric_thickness_mm / layer_height_mm).
+    layer_height_mm: float = 0.10
     # Legacy / override: explicit number of Z slabs. Only used when
     # `layer_height_mm <= 0`; otherwise we derive it from layer_height_mm.
     z_layers: int = 6
@@ -210,41 +202,10 @@ def generate_points(
         layers = max(1, params.z_layers)
     all_points: list[np.ndarray] = []
 
-    # Target-driven sampling: draw exactly target_points pixel indices
-    # weighted by density, then spread them uniformly across layers. This
-    # bypasses per-pixel Bernoulli clipping so output matches target even
-    # on small images or bg-removed portraits where only ~10% of pixels
-    # carry the subject.
-    density_sum = float(density.sum())
-    if params.target_points > 0 and density_sum > 1e-6:
-        target = int(params.target_points)
-        flat_w = density.reshape(-1).astype(np.float64)
-        flat_w /= flat_w.sum()
-        idx = rng.choice(flat_w.size, size=target, replace=True, p=flat_w)
-        ys = (idx // w).astype(np.int64)
-        xs = (idx % w).astype(np.int64)
-
-        jitter_x = (rng.random(target) - 0.5) * params.xy_jitter
-        jitter_y = (rng.random(target) - 0.5) * params.xy_jitter
-        x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
-        y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
-
-        d = depth_norm[ys, xs]
-        z_surface = z_base + d * inner_z * params.z_scale
-        # Layer assignment: pick a layer per point then offset within its slab.
-        layer_of_pt = rng.integers(0, layers, size=target)
-        layer_span = vol_thickness_mm / max(1, layers)
-        layer_center = (layer_of_pt - (layers - 1) / 2.0) * layer_span
-        z_offset = layer_center + (rng.random(target) - 0.5) * layer_span
-        z_mm = z_surface + z_offset
-
-        inten = intensity_map[ys, xs]
-        pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
-        print(f"[pointcloud] target sampling: emitted {target} points")
-        return pts
-
+    # Pure Bernoulli per (pixel, layer). No target boost, no per-pixel cap —
+    # the count emerges from layer_count × tonemapped luminance × base_density,
+    # so tonemap sliders and layer_height are the only controls that move it.
     for layer_idx in range(layers):
-        layer_p = density * params.base_density
         # Each additional layer is slightly less dense, roughly modeling the
         # taper of the volumetric shell around the main depth surface.
         # `layer_falloff` is the *total* drop from layer 0 to layer N-1:
@@ -253,7 +214,7 @@ def generate_points(
             1.0 if layers == 1
             else 1.0 - params.layer_falloff * (layer_idx / (layers - 1))
         )
-        layer_p = layer_p * falloff * (params.max_points_per_pixel / layers)
+        layer_p = density * params.base_density * falloff
         layer_p = np.clip(layer_p, 0.0, 1.0)
 
         mask = rng.random((h, w)) < layer_p

@@ -23,18 +23,17 @@ export const jobOptionsSchema = z.object({
   margin_y: z.number().min(0).default(3),
   margin_z: z.number().min(0).default(3),
 
-  // Distribution. Defaults mirror CrystalParams in worker/pointcloud.py and
-  // target ~1.5M–3M points on a typical portrait after bg removal.
-  base_density: z.number().min(0).max(1).default(0.18),
-  max_points_per_pixel: z.number().int().min(1).max(32).default(15),
-  // Set 0 to use the photopoints3d-style Bernoulli path where count emerges
-  // from layer_height + brightness/contrast/gamma. >0 forces an exact count.
-  target_points: z.number().int().min(0).max(5_000_000).optional(),
+  // Distribution. Defaults mirror CrystalParams in worker/pointcloud.py.
+  // Pure Bernoulli sampling — total point count emerges from
+  //   pixels × mean(tonemapped luminance) × base_density × layers
+  // so layer_height + brightness/contrast/gamma fully determine the total.
+  // 0.012 lands a 4 MP portrait at ~0.03 mm in the 500k–1M range.
+  base_density: z.number().min(0).max(1).default(0.012),
   xy_jitter: z.number().min(0).max(2).default(0.5),
-  // Layer height in mm — primary vertical-resolution control. Smaller = more
-  // layers = more points = finer Z gradient. Min is 0.05 (industrial fiber
-  // pitch), max 1.0 for very rough drafts.
-  layer_height_mm: z.number().min(0.05).max(1.0).default(0.15),
+  // Layer height in mm — the primary control for both vertical resolution
+  // AND point count (count is linear in 1/layer_height). 0.01 is fiber-pitch
+  // dense, 0.03 a fine portrait, 0.10 a balanced default, 0.30 a draft.
+  layer_height_mm: z.number().min(0.01).max(0.30).default(0.10),
   // Legacy fallback only used when layer_height_mm is 0.
   z_layers: z.number().int().min(1).max(16).default(6),
   sampling_max_side_px: z.number().int().min(256).max(4096).default(2500),

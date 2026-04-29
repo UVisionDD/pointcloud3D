@@ -50,7 +50,7 @@ def _opts_from_json(raw: dict[str, Any], workdir: Path) -> PipelineOptions:
         k: raw[k] for k in (
             "size_x", "size_y", "size_z",
             "margin_x", "margin_y", "margin_z",
-            "base_density", "max_points_per_pixel", "target_points",
+            "base_density",
             "xy_jitter", "layer_height_mm", "z_layers",
             "volumetric_thickness", "z_scale",
             "brightness", "contrast", "gamma",

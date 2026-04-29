@@ -87,7 +87,6 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         margin_y=pick("margin_y", crystal.margin_y),
         margin_z=pick("margin_z", crystal.margin_z),
         base_density=pick("base_density", crystal.base_density),
-        max_points_per_pixel=pick("max_points_per_pixel", crystal.max_points_per_pixel),
         xy_jitter=pick("xy_jitter", crystal.xy_jitter),
         z_layers=pick("z_layers", crystal.z_layers),
         sampling_max_side_px=pick("sampling_max_side_px", crystal.sampling_max_side_px),
@@ -101,7 +100,6 @@ def options_from_job_row(job: dict, workdir: Path) -> PipelineOptions:
         intensity_gamma=pick("intensity_gamma", crystal.intensity_gamma),
         intensity_floor=pick("intensity_floor", crystal.intensity_floor),
         layer_falloff=pick("layer_falloff", crystal.layer_falloff),
-        target_points=pick("target_points", crystal.target_points),
         layer_height_mm=pick("layer_height_mm", crystal.layer_height_mm),
         seed=pick("seed", crystal.seed),
     )
