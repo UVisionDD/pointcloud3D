@@ -236,8 +236,23 @@ def generate_points(
 
         d = depth_norm[ys, xs]
         z_surface = z_base + d * inner_z * params.z_scale
-        z_offset = (rng.random(xs.size) - 0.5) * vol_thickness_mm
+        # Volumetric scatter BEHIND the depth surface only — one-sided
+        # exponential so the front edge stays sharp (the depth profile
+        # reads as the actual face shape from the side) and points fade
+        # gradually into the crystal instead of forming a hard slab.
+        # The previous symmetric uniform scatter put equal mass in front
+        # of and behind the surface, which from the side looked like a
+        # duplicate of the front profile sitting `vol_thickness_mm` behind
+        # it — exactly the "copies behind the first line" artifact.
+        # `invert_depth=True` (default) puts closer-to-camera at higher Z,
+        # so "behind the depth surface" is the -Z direction; flip the sign
+        # otherwise.
+        back_dir = -1.0 if params.invert_depth else 1.0
+        z_offset = back_dir * rng.exponential(vol_thickness_mm, size=xs.size)
         z_mm = z_surface + z_offset
+        # Clamp to the engravable interior in case the exponential tail
+        # runs long on a deep-Z pixel.
+        z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
 
         inten = intensity_map[ys, xs]
 
