@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { and, eq } from "drizzle-orm";
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 
@@ -9,7 +9,7 @@ import { serverEnv } from "@/lib/env";
 
 const bodySchema = z.object({
   code: z.string().min(1).max(64),
-  jobId: z.string().min(1),
+  jobId: z.string().min(1).optional(),
 });
 
 function validCodes(): Set<string> {
@@ -31,45 +31,95 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad_request" }, { status: 400 });
   }
 
+  const codeNorm = parsed.data.code.trim().toLowerCase();
   const codes = validCodes();
-  if (codes.size === 0 || !codes.has(parsed.data.code.trim().toLowerCase())) {
+  if (codes.size === 0 || !codes.has(codeNorm)) {
     return NextResponse.json({ error: "invalid_code" }, { status: 400 });
   }
 
-  const [job] = await db
+  // Make sure the user row exists so the FK on creditLedger / users updates resolves.
+  const clerkUser = await currentUser();
+  const email = clerkUser?.primaryEmailAddress?.emailAddress;
+  if (!email) {
+    return NextResponse.json({ error: "no_email" }, { status: 400 });
+  }
+  await db
+    .insert(schema.users)
+    .values({ id: userId, email })
+    .onConflictDoNothing();
+
+  // Per-job redemption: unlock that specific job + 30-day re-export window.
+  if (parsed.data.jobId) {
+    const [job] = await db
+      .select()
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.id, parsed.data.jobId),
+          eq(schema.jobs.userId, userId),
+        ),
+      )
+      .limit(1);
+    if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+    if (job.paidAt) {
+      return NextResponse.json({ ok: true, alreadyPaid: true });
+    }
+
+    const paidAt = new Date();
+    const windowEnd = new Date(paidAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    await db
+      .update(schema.jobs)
+      .set({ paidAt, reexportWindowEndsAt: windowEnd, updatedAt: paidAt })
+      .where(eq(schema.jobs.id, job.id));
+
+    await db
+      .insert(schema.creditLedger)
+      .values({
+        id: randomUUID(),
+        userId,
+        delta: 0,
+        reason: `discount_code:${codeNorm}:job`,
+        jobId: job.id,
+      })
+      .onConflictDoNothing();
+
+    return NextResponse.json({ ok: true });
+  }
+
+  // User-level redemption (from /pricing): grant PAYG credits.
+  // Each (user, code) pair can only redeem once.
+  const reason = `discount_code:${codeNorm}`;
+  const [existing] = await db
     .select()
-    .from(schema.jobs)
+    .from(schema.creditLedger)
     .where(
       and(
-        eq(schema.jobs.id, parsed.data.jobId),
-        eq(schema.jobs.userId, userId),
+        eq(schema.creditLedger.userId, userId),
+        eq(schema.creditLedger.reason, reason),
       ),
     )
     .limit(1);
-  if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
-
-  if (job.paidAt) {
-    return NextResponse.json({ ok: true, alreadyPaid: true });
+  if (existing) {
+    return NextResponse.json({ ok: true, alreadyRedeemed: true });
   }
 
-  const paidAt = new Date();
-  const windowEnd = new Date(paidAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const credits = serverEnv().DISCOUNT_CODE_CREDITS ?? 99;
 
+  await db.insert(schema.creditLedger).values({
+    id: randomUUID(),
+    userId,
+    delta: credits,
+    reason,
+  });
   await db
-    .update(schema.jobs)
-    .set({ paidAt, reexportWindowEndsAt: windowEnd, updatedAt: paidAt })
-    .where(eq(schema.jobs.id, job.id));
-
-  await db
-    .insert(schema.creditLedger)
-    .values({
-      id: randomUUID(),
-      userId,
-      delta: 0,
-      reason: "discount_code",
-      jobId: job.id,
+    .update(schema.users)
+    .set({
+      paygCredits: sql`${schema.users.paygCredits} + ${credits}`,
+      updatedAt: new Date(),
     })
-    .onConflictDoNothing();
+    .where(eq(schema.users.id, userId));
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, creditsGranted: credits });
 }

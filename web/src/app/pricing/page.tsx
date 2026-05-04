@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 
 import { NavBar } from "@/components/navbar";
 import { CheckoutButton } from "@/components/checkout-button";
+import { DiscountCodeForm } from "@/components/discount-code-form";
 
 type Plan = {
   name: string;
@@ -85,6 +86,12 @@ export default async function PricingPage() {
               All prices in EUR. Taxes calculated at checkout.
             </p>
           </div>
+
+          {signedIn ? (
+            <div style={{ maxWidth: 360, margin: "0 auto 24px" }}>
+              <DiscountCodeForm />
+            </div>
+          ) : null}
 
           <div className="price-block-label">Pay as you go</div>
           <div className="price-grid two">

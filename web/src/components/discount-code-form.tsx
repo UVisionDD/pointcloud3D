@@ -7,14 +7,19 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export function DiscountCodeForm({ jobId }: { jobId: string }) {
+interface Props {
+  jobId?: string;
+  className?: string;
+}
+
+export function DiscountCodeForm({ jobId, className }: Props) {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
 
   return (
     <form
-      className="space-y-2 pt-2"
+      className={className ?? "space-y-2 pt-2"}
       onSubmit={async (e) => {
         e.preventDefault();
         if (!code.trim()) return;
@@ -28,12 +33,23 @@ export function DiscountCodeForm({ jobId }: { jobId: string }) {
           const data = (await r.json().catch(() => ({}))) as {
             error?: string;
             ok?: boolean;
+            creditsGranted?: number;
+            alreadyRedeemed?: boolean;
+            alreadyPaid?: boolean;
           };
           if (!r.ok || !data.ok) {
             toast.error(data.error === "invalid_code" ? "Invalid code" : "Could not redeem");
             return;
           }
-          toast.success("Code applied — downloads unlocked");
+          if (data.alreadyRedeemed) {
+            toast.info("Code already redeemed on this account");
+          } else if (data.alreadyPaid) {
+            toast.info("This job is already unlocked");
+          } else if (data.creditsGranted) {
+            toast.success(`Code applied — ${data.creditsGranted} credits added`);
+          } else {
+            toast.success("Code applied — downloads unlocked");
+          }
           setCode("");
           router.refresh();
         } catch {

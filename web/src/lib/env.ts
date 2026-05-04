@@ -41,6 +41,9 @@ const serverSchema = z.object({
   // Comma-separated list of in-app bypass codes that unlock a job for free
   // (e.g. "FREEDAAN,TESTER1"). Compared case-insensitively. Leave unset to disable.
   DISCOUNT_CODES: z.string().optional(),
+  // How many PAYG credits a code grants when redeemed from the pricing page
+  // (no specific job). Per-job redemption ignores this. Default 99.
+  DISCOUNT_CODE_CREDITS: z.coerce.number().int().positive().optional(),
 });
 
 const publicSchema = z.object({
