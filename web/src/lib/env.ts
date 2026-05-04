@@ -37,6 +37,10 @@ const serverSchema = z.object({
   // Worker (used when web calls worker directly via tunnel)
   WORKER_BASE_URL: z.string().url().optional(),
   WORKER_SHARED_SECRET: z.string().optional(),
+
+  // Comma-separated list of in-app bypass codes that unlock a job for free
+  // (e.g. "FREEDAAN,TESTER1"). Compared case-insensitively. Leave unset to disable.
+  DISCOUNT_CODES: z.string().optional(),
 });
 
 const publicSchema = z.object({

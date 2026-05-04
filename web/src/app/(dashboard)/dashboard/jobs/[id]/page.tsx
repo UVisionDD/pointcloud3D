@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { PointCloudViewer } from "@/components/point-cloud-viewer";
 import { JobPoller } from "@/components/job-poller";
+import { DiscountCodeForm } from "@/components/discount-code-form";
 import { presignedDownload } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
@@ -134,6 +135,7 @@ export default async function JobDetailPage({
                   {job.reexportWindowEndsAt.toLocaleDateString()}.
                 </p>
               ) : null}
+              {!job.paidAt ? <DiscountCodeForm jobId={job.id} /> : null}
             </CardContent>
           </Card>
         </div>
