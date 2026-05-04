@@ -623,10 +623,20 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
     }
   }, [uploadedKey, buildJobOptions]);
 
+  // Coupon state — when a code is redeemed against the current job, we flip
+  // the export button to the "free" path (no Stripe). The redemption is tied
+  // to the specific jobId, so uploading a new photo invalidates it.
+  const [redeemedJobId, setRedeemedJobId] = useState<string | null>(null);
+  const couponActive = redeemedJobId !== null && redeemedJobId === jobId;
+
   const onExport = async () => {
     if (!jobId) return;
     if (!signedIn) { router.push("/sign-up"); return; }
     if (plan && plan !== "free") {
+      router.push(`/dashboard/jobs/${jobId}`);
+      return;
+    }
+    if (couponActive || credits > 0) {
       router.push(`/dashboard/jobs/${jobId}`);
       return;
     }
@@ -652,6 +662,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
 
   const ready = stepMode === "ready";
   const subOk = signedIn && plan && plan !== "free";
+  const isFree = !!subOk || credits > 0 || couponActive;
   const disabled = !ready || !outputFormat || busy;
 
   return (
@@ -708,9 +719,13 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
           />
           <ExportBar
             outputFormat={outputFormat}
+            isFree={isFree}
             subOk={!!subOk}
             plan={plan}
             credits={credits}
+            jobId={jobId}
+            couponActive={couponActive}
+            onCouponRedeemed={() => setRedeemedJobId(jobId)}
             onExport={onExport}
             disabled={disabled}
           />
@@ -1695,15 +1710,50 @@ function Stat({ k, v }: { k: string; v: string }) {
 // up with the dropdown above and forced the worker to render every
 // format every time; both gone now.
 function ExportBar({
-  outputFormat, subOk, plan, credits, onExport, disabled,
+  outputFormat, isFree, subOk, plan, credits, jobId, couponActive,
+  onCouponRedeemed, onExport, disabled,
 }: {
   outputFormat: FormatKey;
+  isFree: boolean;
   subOk: boolean;
   plan: string | null;
   credits: number;
+  jobId: string | null;
+  couponActive: boolean;
+  onCouponRedeemed: () => void;
   onExport: () => void;
   disabled: boolean;
 }) {
+  const [coupon, setCoupon] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
+
+  const redeem = async () => {
+    if (!coupon.trim() || !jobId) return;
+    setRedeeming(true);
+    try {
+      const r = await fetch("/api/redeem-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: coupon.trim(), jobId }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!r.ok || !data.ok) {
+        toast.error(data.error === "invalid_code" ? "Invalid code" : "Could not redeem");
+        return;
+      }
+      toast.success("Coupon applied");
+      setCoupon("");
+      onCouponRedeemed();
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setRedeeming(false);
+    }
+  };
+
   return (
     <div className="export-bar">
       <div className="eb-left">
@@ -1717,11 +1767,56 @@ function ExportBar({
         </div>
       </div>
       <div className="eb-right">
+        {!isFree && jobId ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="text"
+              value={coupon}
+              onChange={(e) => setCoupon(e.target.value)}
+              placeholder="Coupon"
+              disabled={redeeming}
+              style={{
+                height: 32,
+                width: 120,
+                padding: "0 10px",
+                borderRadius: 6,
+                border: "1px solid var(--line)",
+                background: "transparent",
+                color: "var(--fg)",
+                fontFamily: "var(--font-jetbrains-mono), monospace",
+                fontSize: 12,
+                outline: "none",
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); void redeem(); }
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={redeeming || !coupon.trim()}
+              onClick={() => void redeem()}
+              style={{ height: 32, fontSize: 12 }}
+            >
+              {redeeming ? "…" : "Redeem"}
+            </button>
+          </div>
+        ) : null}
         <div className="eb-price">
-          {subOk ? (
+          {couponActive ? (
+            <>
+              <div className="mono muted" style={{ fontSize: 10 }}>coupon</div>
+              <div className="eb-amt">free</div>
+            </>
+          ) : subOk ? (
             <>
               <div className="mono muted" style={{ fontSize: 10 }}>cost</div>
               <div className="eb-amt">{plan === "max" ? "included" : `${credits} credits`}</div>
+            </>
+          ) : credits > 0 ? (
+            <>
+              <div className="mono muted" style={{ fontSize: 10 }}>cost</div>
+              <div className="eb-amt">{`${credits} credits`}</div>
             </>
           ) : (
             <>
@@ -1736,7 +1831,7 @@ function ExportBar({
           disabled={disabled}
           onClick={onExport}
         >
-          {subOk ? `Export ${outputFormat.toUpperCase()} →` : `Pay & export ${outputFormat.toUpperCase()} →`}
+          {isFree ? `Export ${outputFormat.toUpperCase()} →` : `Pay & export ${outputFormat.toUpperCase()} →`}
         </button>
       </div>
     </div>
