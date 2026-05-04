@@ -25,24 +25,29 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # gradients), so portraits run a tighter layer height. Shallow Z keeps
     # the nose from poking into the upper half of the crystal.
     "portrait": CrystalParams(
-        base_density=0.09,
+        # Tighter shell + more Z spread + lower density so the depth surface
+        # stays readable from the side instead of smudging into a slab. The
+        # volumetric_thickness used to be 4 mm of random Z noise around each
+        # depth-derived Z, which collectively buried a 5-10 mm head profile
+        # under noise; 1.2 mm preserves the shape.
+        base_density=0.07,
         max_points_per_pixel=15,
         xy_jitter=0.5,
         layer_height_mm=0.10,
-        volumetric_thickness=0.05,
-        z_scale=0.22,
+        volumetric_thickness=0.015,
+        z_scale=0.32,
         contrast=1.15,
         gamma=0.95,
         depth_gamma=0.85,
     ),
     # Pets are furrier — bump jitter a hair so fur doesn't look banded.
     "pet": CrystalParams(
-        base_density=0.10,
+        base_density=0.08,
         max_points_per_pixel=15,
         xy_jitter=0.55,
         layer_height_mm=0.12,
-        volumetric_thickness=0.07,
-        z_scale=0.28,
+        volumetric_thickness=0.02,
+        z_scale=0.36,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.9,
@@ -63,12 +68,12 @@ CONTENT_PRESETS: dict[str, CrystalParams] = {
     # Objects usually have dark background, effective lum lower — compensate
     # by nudging base_density up.
     "object": CrystalParams(
-        base_density=0.10,
+        base_density=0.08,
         max_points_per_pixel=15,
         xy_jitter=0.5,
         layer_height_mm=0.15,
-        volumetric_thickness=0.07,
-        z_scale=0.3,
+        volumetric_thickness=0.02,
+        z_scale=0.38,
         contrast=1.1,
         gamma=1.0,
         depth_gamma=0.95,
