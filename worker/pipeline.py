@@ -6,6 +6,8 @@ behind flags so the caller picks what they want.
 """
 from __future__ import annotations
 
+import gc
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,13 +19,19 @@ from PIL import Image
 from pointcloud import CrystalParams, generate_points
 from text_overlay import TextOverlayParams, generate_text_points
 
-# Depth-Anything-V2-Large: 335 M params, ~1.3 GB FP32. Needs MPS / CUDA;
-# CPU inference takes tens of seconds. On an M4 Mac Mini (16 GB unified)
-# first load pulls the weights from HF (~650 MB on disk) and runs in the
-# ~1–3 s range per image. Swap to `-Base-hf` or `-Small-hf` if memory is
-# tight or you want faster turnaround; swap to the `-Metric-*` variants
-# if you want absolute depth in meters instead of relative.
-MODEL_ID = "depth-anything/Depth-Anything-V2-Large-hf"
+# Depth-Anything-V2 variants:
+#   - Small: 24.8 M params, ~100 MB on disk, ~500 MB RAM at 1600 px input
+#   - Base:   97.5 M params, ~390 MB on disk, ~1.5 GB RAM at 1600 px input
+#   - Large: 335.3 M params, ~1.3 GB on disk, ~5–8 GB RAM at 2500 px input
+#
+# Default is "Small" because a 16 GB Mac Mini with Large at 2500 px input
+# pushed past available RAM, triggered swap, filled disk with compressed
+# pages, and crashed the OS mid-job. Small + a tighter sampling cap fits
+# comfortably in 16 GB alongside rembg, Claude, browser, etc. Override
+# with the WORKER_DEPTH_MODEL env var (Small|Base|Large) if you have
+# more memory headroom and want sharper depth.
+_DEPTH_VARIANT = os.environ.get("WORKER_DEPTH_MODEL", "Small")
+MODEL_ID = f"depth-anything/Depth-Anything-V2-{_DEPTH_VARIANT}-hf"
 
 _PROCESSOR = None
 _MODEL = None
@@ -197,15 +205,15 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
                   f"({frac*100:.1f}%)")
 
         # --- Depth estimation ---
+        # NOTE: no separate warmup pass. The previous code ran the model
+        # twice (warmup + real) to compile MPS kernels, which kept the
+        # warmup activations resident across the real call and roughly
+        # doubled peak GPU memory — enough to push a 16 GB Mac Mini into
+        # swap and crash the OS. MPS now caches kernels across calls
+        # automatically, so a single forward pass is fine; the first job
+        # after startup is ~200 ms slower, but inference fits in memory.
         processor, model, device = load_depth_model()
         inputs = processor(images=image, return_tensors="pt").to(device)
-
-        # Warmup first call on MPS (kernels compile).
-        with torch.no_grad():
-            _ = model(**inputs)
-        if device.type == "mps":
-            torch.mps.synchronize()
-
         t0 = time.perf_counter()
         with torch.no_grad():
             outputs = model(**inputs)
@@ -221,6 +229,13 @@ def run_pipeline(opts: PipelineOptions) -> PipelineResult:
         ).squeeze().cpu().numpy().astype(np.float32)
         print(f"[pipeline] depth: shape={depth.shape}, "
               f"range={float(depth.min()):.3f}..{float(depth.max()):.3f}")
+
+        # Free the model's output tensors before face enhancement / sampling
+        # so peak resident memory drops back to weights-only between stages.
+        del outputs, inputs
+        gc.collect()
+        if device.type == "mps":
+            torch.mps.empty_cache()
 
         # --- Optional face-aware enhancement ---
         # Best-effort: if face detection or face-depth blending fails for any

@@ -110,7 +110,7 @@ export const DEFAULT_JOB_OPTIONS: Partial<JobOptions> = {
   max_points_per_pixel: 15,
   xy_jitter: 0.5,
   z_layers: 3,
-  volumetric_thickness: 0.08,
+  volumetric_thickness: 0.02,
   z_scale: 0.85,
   brightness: 0,
   contrast: 1,

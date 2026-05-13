@@ -359,7 +359,7 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       // orientation regardless of EXIF / camera-saved rotation.
       rotation: params.rotation,
       sampling_max_side_px: 2500,
-      volumetric_thickness: 0.08,
+      volumetric_thickness: 0.02,
       z_scale: zScale,
       brightness: params.brightness,
       contrast: params.contrast,

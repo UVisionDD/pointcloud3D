@@ -36,7 +36,7 @@ export const jobOptionsSchema = z.object({
   z_layers: z.number().int().min(1).max(16).default(6),
   sampling_max_side_px: z.number().int().min(256).max(4096).default(2500),
   layer_falloff: z.number().min(0).max(1).default(0.2),
-  volumetric_thickness: z.number().min(0).max(1).default(0.08),
+  volumetric_thickness: z.number().min(0).max(1).default(0.02),
   z_scale: z.number().min(0).max(1).default(0.25),
 
   // Source-image rotation in 90° steps. Worker rotates the bytes via PIL

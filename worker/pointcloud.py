@@ -69,7 +69,12 @@ class CrystalParams:
     # collectively halved the total cloud size.
     layer_falloff: float = 0.2
     # Volumetric thickness around the depth surface (fraction of size_z, 0..1).
-    volumetric_thickness: float = 0.08
+    # This is the half-normal scale parameter used to scatter points behind
+    # the depth surface — the typical tail length, with 99% of points within
+    # 2.6× this value. 0.02 of an 80 mm crystal = ~1.5 mm tail, short enough
+    # that hair-front points don't bleed into cheek-depth Z and ruin the
+    # side profile. Presets override this for content-specific looks.
+    volumetric_thickness: float = 0.02
     # Z scale: 0..1. Scales how much of crystal depth the shape occupies.
     # 0.25 keeps portraits visibly flat on an 80mm-long crystal. Landscape
     # presets override this upward because horizon depth is the point.
@@ -236,22 +241,21 @@ def generate_points(
 
         d = depth_norm[ys, xs]
         z_surface = z_base + d * inner_z * params.z_scale
-        # Volumetric scatter BEHIND the depth surface only — one-sided
-        # exponential so the front edge stays sharp (the depth profile
-        # reads as the actual face shape from the side) and points fade
-        # gradually into the crystal instead of forming a hard slab.
-        # The previous symmetric uniform scatter put equal mass in front
-        # of and behind the surface, which from the side looked like a
-        # duplicate of the front profile sitting `vol_thickness_mm` behind
-        # it — exactly the "copies behind the first line" artifact.
-        # `invert_depth=True` (default) puts closer-to-camera at higher Z,
-        # so "behind the depth surface" is the -Z direction; flip the sign
-        # otherwise.
+        # Volumetric scatter BEHIND the depth surface only. Half-normal
+        # |N(0, σ²)| with σ = vol_thickness_mm: the front edge stays
+        # sharp (peak of the distribution is at z_surface, reads as the
+        # actual face profile from the side) and the cloud fades behind
+        # it. Half-normal has tighter tail than exponential — 99% within
+        # 2.6σ vs 4.6σ — so hair-front points (high Z) don't bleed back
+        # to the same Z as cheek/forehead-front points, which would
+        # smear the side profile into a flat slab. Direction is
+        # invert_depth-aware: with invert_depth=True (default,
+        # "closer = higher Z"), the tail goes to lower Z.
         back_dir = -1.0 if params.invert_depth else 1.0
-        z_offset = back_dir * rng.exponential(vol_thickness_mm, size=xs.size)
+        z_offset = back_dir * np.abs(rng.standard_normal(xs.size)) * vol_thickness_mm
         z_mm = z_surface + z_offset
-        # Clamp to the engravable interior in case the exponential tail
-        # runs long on a deep-Z pixel.
+        # Clamp to the engravable interior so the tail can't poke a
+        # point outside the crystal.
         z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
 
         inten = intensity_map[ys, xs]
