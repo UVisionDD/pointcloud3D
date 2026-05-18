@@ -227,45 +227,35 @@ def generate_points(
     all_points: list[np.ndarray] = []
 
     if params.sampling_mode == "volumetric":
-        # ---- Photopoints3d-style luminance-volumetric carving ----
+        # ---- Silhouette-3D sampling ----
         #
-        # Each Z layer occupies its own slab inside the crystal's carving
-        # zone. A pixel only emits at layer i if its tonemapped luminance
-        # exceeds i / (layers - 1). So a fully-white pixel (eye highlight,
-        # tooth) emits at every layer — forming a column of points all the
-        # way through the crystal Z. A 50%-bright pixel only emits in the
-        # front half. Dark pixels emit nothing.
+        # Brightness controls how MANY points each pixel emits; the depth
+        # map controls WHERE those points sit in Z. Each (x, y) pixel's
+        # emissions all cluster at the SAME depth-derived Z (with sub-mm
+        # laser-stipple noise), so from the side the cloud reads as the
+        # actual depth profile curve — forehead-nose-chin silhouette —
+        # and not as vertical columns / a "block" of stacked points
+        # behind each bright pixel.
         #
-        # The depth-model output is intentionally unused here; the 3D
-        # structure comes from luminance, not depth. That's what makes the
-        # cloud readable from any viewing angle instead of being a thin
-        # depth-surface sheet that flattens out from the side.
+        # The brightness-above-threshold scheme is preserved so we keep
+        # the photopoints3d behaviour of "brighter pixels contribute more
+        # density": a fully-white pixel passes every layer iteration's
+        # threshold (lots of emissions), a 50%-bright pixel only passes
+        # the front half (fewer emissions), a dark pixel passes no
+        # iterations. But the layer iteration is now purely a Bernoulli
+        # loop for COUNT modulation — every emission lands on the depth
+        # surface, not at the layer's Z slab.
         #
-        # Carving Z range = same envelope as shell mode's depth surface
-        # range. With invert_depth=True (default), the front of the
-        # carving (toward the camera) is +Z; layer 0 sits there. Without
-        # invert_depth, the convention flips.
-        inner_z_used = inner_z * params.z_scale
-        if params.invert_depth:
-            layer_z_top = z_base + inner_z_used
-            layer_z_bottom = z_base
-        else:
-            layer_z_top = z_base
-            layer_z_bottom = z_base + inner_z_used
-        # Tune the per-layer probability so the total point count on a
-        # typical 4 MP portrait (mean(density)≈0.25, E[density²]≈0.085)
-        # matches what shell mode produces with the same base_density ×
-        # max_points_per_pixel. Algebra:
-        #   shell total ≈ N_pix × E[d] × base_density × mpp
-        #   volumetric total ≈ N_pix × E[d²] × strength / 2
-        # => strength = 2 × E[d] / E[d²] × base_density × mpp ≈ 6 × bd × mpp
+        # The "3D depth" slider (params.z_scale) is the knob that
+        # controls how pronounced the side profile is: low z_scale
+        # squashes the depth gradient and the silhouette looks flat;
+        # ≥0.5 spreads the forehead-to-nose depth across enough of the
+        # crystal Z that the profile reads cleanly from any angle.
         volumetric_strength = params.base_density * params.max_points_per_pixel * 6.0
-        layer_slab_mm = abs(layer_z_top - layer_z_bottom) / max(1, layers)
 
         for layer_idx in range(layers):
-            # Threshold rises with depth: front layer = 0 (everything passes),
-            # back layer = 1 (only fully-white). Headroom = how far each
-            # pixel's brightness exceeds this layer's threshold.
+            # Layer is purely a Bernoulli-count knob now: threshold rises
+            # with index, so brighter pixels pass MORE iterations.
             threshold = layer_idx / (layers - 1) if layers > 1 else 0.0
             headroom = np.clip(density - threshold, 0.0, 1.0)
             layer_p = headroom * volumetric_strength / max(1, layers)
@@ -285,16 +275,15 @@ def generate_points(
             x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
             y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
 
-            # Z determined by the layer index — interpolate between front and
-            # back of the carving range. Small uniform jitter within the
-            # layer's slab so points don't sit on a hard plane.
-            if layers > 1:
-                t = layer_idx / (layers - 1)
-            else:
-                t = 0.5
-            layer_z = layer_z_top + (layer_z_bottom - layer_z_top) * t
-            z_jitter = (rng.random(xs.size) - 0.5) * layer_slab_mm
-            z_mm = layer_z + z_jitter
+            # Z = depth surface ONLY (no per-layer slab). Every emission
+            # for this pixel — across all layer iterations — sits at the
+            # same Z, so the side view shows the depth profile curve
+            # rather than vertical columns. The sub-mm Gaussian noise
+            # breaks up the otherwise-perfect mathematical sheet so
+            # points read as laser stipple, not as a polygon.
+            d = depth_norm[ys, xs]
+            z_mm = z_base + d * inner_z * params.z_scale
+            z_mm = z_mm + rng.standard_normal(xs.size).astype(np.float32) * 0.15
             z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
 
             inten = intensity_map[ys, xs]
