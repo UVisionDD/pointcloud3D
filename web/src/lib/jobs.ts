@@ -49,10 +49,14 @@ export const jobOptionsSchema = z.object({
     .union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])
     .default(0),
 
-  // Tonemap.
+  // Tonemap. Defaults match the engraving-optimized baseline used by the
+  // studio UI (TONEMAP_BASELINE in web/src/components/studio.tsx). The UI
+  // sends `baseline + slider_delta`, so direct API consumers that don't
+  // specify brightness/contrast/gamma will get the same engraving-tuned
+  // tonemap as the UI's "all sliders at 0" state.
   brightness: z.number().min(-1).max(1).default(0),
-  contrast: z.number().min(0).max(3).default(1),
-  gamma: z.number().min(0.1).max(5).default(1),
+  contrast: z.number().min(0).max(3).default(1.15),
+  gamma: z.number().min(0.1).max(5).default(0.95),
 
   // Depth curve.
   invert_depth: z.boolean().default(true),

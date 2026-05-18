@@ -26,6 +26,11 @@ interface Params {
   jitter: number;
   pointy: number;
   auto: boolean;
+  // Tonemap sliders are deltas around an engraving-optimized baseline, so
+  // the UI can show 0 as the "no extra adjustment" position while still
+  // sending values tuned for K9 crystal subsurface engraving to the worker.
+  // See TONEMAP_BASELINE below. Slider value 0 -> baseline sent to worker;
+  // slider +0.10 -> baseline + 0.10; slider -0.10 -> baseline - 0.10.
   brightness: number;
   contrast: number;
   gamma: number;
@@ -82,6 +87,24 @@ const PRESET_TO_SERVER: Record<PresetKey, "portrait" | "pet" | "landscape" | "ob
   logo: "text_logo",
 };
 
+// Tonemap baseline tuned for K9 subsurface laser engraving. These are the
+// actual brightness/contrast/gamma values the worker sees when the UI
+// slider is at 0. Defaults:
+//   brightness +0.00 -> no lift; photos are usually well-exposed
+//   contrast  +1.15 -> slight lift on highlights so the subject pops while
+//                       background-removed black pixels stay near zero
+//   gamma     +0.95 -> brighten midtones a hair so more face area gets
+//                       point density (cheek / forehead instead of just
+//                       highlights)
+// Slider semantics: each slider is the *delta* from this baseline. UI
+// displays "+0.05" / "-0.10" etc.; buildJobOptions sends baseline + delta
+// to the worker. So slider=0 still produces an engraving-optimized cloud.
+const TONEMAP_BASELINE = {
+  brightness: 0.0,
+  contrast: 1.15,
+  gamma: 0.95,
+} as const;
+
 // Format → list of laser machines that accept it. Used as the greyed-out
 // "compatible with" hint in each format dropdown option, replacing the old
 // per-laser dropdown that forced the user to pick hardware they might not
@@ -133,7 +156,9 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
   const [outputFormat, setOutputFormat] = useState<FormatKey>("glb");
   const [params, setParams] = useState<Params>({
     layerHeight: 0.10, depth: 0.9, jitter: 0.5, pointy: 0.6, auto: true,
-    brightness: 0, contrast: 1, gamma: 1, zlayers: 90,
+    // Tonemap fields are DELTAS from TONEMAP_BASELINE (see top of file).
+    // 0 here means "send the optimized baseline to the worker."
+    brightness: 0, contrast: 0, gamma: 0, zlayers: 90,
     rotation: 0,
     sizeX: 50, sizeY: 50, sizeZ: 80,
     marginX: 3, marginY: 3, marginZ: 3,
@@ -361,9 +386,13 @@ export function Studio({ signedIn, plan, credits, priceIds }: StudioProps) {
       sampling_max_side_px: 2500,
       volumetric_thickness: 0.02,
       z_scale: zScale,
-      brightness: params.brightness,
-      contrast: params.contrast,
-      gamma: params.gamma,
+      // Tonemap fields: UI slider is a delta from the engraving-optimized
+      // baseline (TONEMAP_BASELINE). The actual value sent to the worker
+      // is baseline + delta, so slider=0 still yields a properly tuned
+      // tonemap rather than neutral 0/1/1.
+      brightness: TONEMAP_BASELINE.brightness + params.brightness,
+      contrast: TONEMAP_BASELINE.contrast + params.contrast,
+      gamma: TONEMAP_BASELINE.gamma + params.gamma,
       invert_depth: params.invert,
       depth_gamma: 1,
       intensity_gamma: 1,
@@ -895,9 +924,31 @@ function SettingsRail({
         />
 
         <div className="sub-label">Image adjustments</div>
-        <Slider label="Brightness" value={params.brightness} set={(v) => sp("brightness", v)} min={-0.5} max={0.5} />
-        <Slider label="Contrast"   value={params.contrast}   set={(v) => sp("contrast",   v)} min={0.5} max={1.5} />
-        <Slider label="Gamma"      value={params.gamma}      set={(v) => sp("gamma",      v)} min={0.5} max={2.0} />
+        {/* Tonemap sliders are deltas from an engraving-optimized baseline
+            (TONEMAP_BASELINE at top of file). Displayed value is the offset
+            with sign, so 0 reads as "no extra adjustment"; the actual
+            values sent to the worker are baseline + delta. */}
+        <Slider
+          label="Brightness" value={params.brightness}
+          set={(v) => sp("brightness", v)}
+          min={-0.5} max={0.5} step={0.01}
+          display={(v) => (v >= 0 ? "+" : "") + v.toFixed(2)}
+          hint="0 = engraving-optimized default"
+        />
+        <Slider
+          label="Contrast" value={params.contrast}
+          set={(v) => sp("contrast", v)}
+          min={-0.5} max={0.5} step={0.01}
+          display={(v) => (v >= 0 ? "+" : "") + v.toFixed(2)}
+          hint="0 = engraving-optimized default"
+        />
+        <Slider
+          label="Gamma" value={params.gamma}
+          set={(v) => sp("gamma", v)}
+          min={-0.5} max={0.5} step={0.01}
+          display={(v) => (v >= 0 ? "+" : "") + v.toFixed(2)}
+          hint="0 = engraving-optimized default"
+        />
 
         <div className="sub-label">Crystal dimensions</div>
         <Dropdown
