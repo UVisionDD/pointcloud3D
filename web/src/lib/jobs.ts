@@ -39,6 +39,14 @@ export const jobOptionsSchema = z.object({
   volumetric_thickness: z.number().min(0).max(1).default(0.02),
   z_scale: z.number().min(0).max(1).default(0.25),
 
+  // Sampling algorithm. "volumetric" is photopoints3d-style luminance
+  // carving (default) — each pixel's brightness determines how deep into
+  // the crystal its points extend, so bright features form 3D columns
+  // visible from any angle. "shell" is the legacy depth-map-derived
+  // single-surface mode, sharp from the camera-facing angle but flat
+  // from the side.
+  sampling_mode: z.enum(["volumetric", "shell"]).default("volumetric"),
+
   // Source-image rotation in 90° steps. Worker rotates the bytes via PIL
   // before the depth model and sampler run, so the cloud comes out in the
   // user-chosen orientation regardless of EXIF / camera-saved orientation.

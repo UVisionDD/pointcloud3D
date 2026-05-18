@@ -99,6 +99,22 @@ class CrystalParams:
     # in the viewer. Bumps the minimum intensity towards this value.
     intensity_floor: float = 0.12
 
+    # Sampling mode.
+    #   "volumetric": photopoints3d-style luminance-volumetric carving.
+    #     Each Z layer has a brightness threshold that increases with depth;
+    #     a pixel only emits at layer i if its tonemapped luminance is
+    #     above i / (layers-1). Brightest pixels (eyes, teeth, white
+    #     highlights) form a column from front to back of the carving
+    #     zone; mid-tones only emit near the front; dark pixels emit
+    #     nowhere. The depth-model output is unused for Z positioning —
+    #     all 3D structure comes from luminance. Reads as a real 3D
+    #     shape from any viewing angle.
+    #   "shell": the previous depth-map-derived front-facing surface
+    #     plus a small half-normal back tail. Sharp from the camera-
+    #     facing angle but flat from the side because every pixel's
+    #     points cluster on one Z surface.
+    sampling_mode: str = "volumetric"
+
     # Deterministic output.
     seed: int = 42
 
@@ -210,58 +226,120 @@ def generate_points(
         layers = max(1, params.z_layers)
     all_points: list[np.ndarray] = []
 
-    for layer_idx in range(layers):
-        layer_p = density * params.base_density
-        # Each additional layer is slightly less dense, roughly modeling the
-        # taper of the volumetric shell around the main depth surface.
-        # `layer_falloff` is the *total* drop from layer 0 to layer N-1:
-        # e.g. 0.2 means the last layer still fires at 80% of the first.
-        falloff = (
-            1.0 if layers == 1
-            else 1.0 - params.layer_falloff * (layer_idx / (layers - 1))
-        )
-        layer_p = layer_p * falloff * (params.max_points_per_pixel / layers)
-        layer_p = np.clip(layer_p, 0.0, 1.0)
+    if params.sampling_mode == "volumetric":
+        # ---- Photopoints3d-style luminance-volumetric carving ----
+        #
+        # Each Z layer occupies its own slab inside the crystal's carving
+        # zone. A pixel only emits at layer i if its tonemapped luminance
+        # exceeds i / (layers - 1). So a fully-white pixel (eye highlight,
+        # tooth) emits at every layer — forming a column of points all the
+        # way through the crystal Z. A 50%-bright pixel only emits in the
+        # front half. Dark pixels emit nothing.
+        #
+        # The depth-model output is intentionally unused here; the 3D
+        # structure comes from luminance, not depth. That's what makes the
+        # cloud readable from any viewing angle instead of being a thin
+        # depth-surface sheet that flattens out from the side.
+        #
+        # Carving Z range = same envelope as shell mode's depth surface
+        # range. With invert_depth=True (default), the front of the
+        # carving (toward the camera) is +Z; layer 0 sits there. Without
+        # invert_depth, the convention flips.
+        inner_z_used = inner_z * params.z_scale
+        if params.invert_depth:
+            layer_z_top = z_base + inner_z_used
+            layer_z_bottom = z_base
+        else:
+            layer_z_top = z_base
+            layer_z_bottom = z_base + inner_z_used
+        # Tune the per-layer probability so the total point count on a
+        # typical 4 MP portrait (mean(density)≈0.25, E[density²]≈0.085)
+        # matches what shell mode produces with the same base_density ×
+        # max_points_per_pixel. Algebra:
+        #   shell total ≈ N_pix × E[d] × base_density × mpp
+        #   volumetric total ≈ N_pix × E[d²] × strength / 2
+        # => strength = 2 × E[d] / E[d²] × base_density × mpp ≈ 6 × bd × mpp
+        volumetric_strength = params.base_density * params.max_points_per_pixel * 6.0
+        layer_slab_mm = abs(layer_z_top - layer_z_bottom) / max(1, layers)
 
-        mask = rng.random((h, w)) < layer_p
-        ys, xs = np.nonzero(mask)
-        print(f"[pointcloud]   layer {layer_idx}: "
-              f"p_mean={float(layer_p.mean()):.3f}, "
-              f"p_max={float(layer_p.max()):.3f}, "
-              f"emitted={int(xs.size)}")
-        if xs.size == 0:
-            continue
+        for layer_idx in range(layers):
+            # Threshold rises with depth: front layer = 0 (everything passes),
+            # back layer = 1 (only fully-white). Headroom = how far each
+            # pixel's brightness exceeds this layer's threshold.
+            threshold = layer_idx / (layers - 1) if layers > 1 else 0.0
+            headroom = np.clip(density - threshold, 0.0, 1.0)
+            layer_p = headroom * volumetric_strength / max(1, layers)
+            layer_p = np.clip(layer_p, 0.0, 1.0)
 
-        jitter_x = (rng.random(xs.size) - 0.5) * params.xy_jitter
-        jitter_y = (rng.random(ys.size) - 0.5) * params.xy_jitter
+            mask = rng.random((h, w)) < layer_p
+            ys, xs = np.nonzero(mask)
+            print(f"[pointcloud]   layer {layer_idx}: "
+                  f"thr={threshold:.2f}, "
+                  f"p_max={float(layer_p.max()):.3f}, "
+                  f"emitted={int(xs.size)}")
+            if xs.size == 0:
+                continue
 
-        x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
-        # Flip Y so top of image is high Y in crystal space.
-        y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
+            jitter_x = (rng.random(xs.size) - 0.5) * params.xy_jitter
+            jitter_y = (rng.random(ys.size) - 0.5) * params.xy_jitter
+            x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
+            y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
 
-        d = depth_norm[ys, xs]
-        z_surface = z_base + d * inner_z * params.z_scale
-        # Volumetric scatter BEHIND the depth surface only. Half-normal
-        # |N(0, σ²)| with σ = vol_thickness_mm: the front edge stays
-        # sharp (peak of the distribution is at z_surface, reads as the
-        # actual face profile from the side) and the cloud fades behind
-        # it. Half-normal has tighter tail than exponential — 99% within
-        # 2.6σ vs 4.6σ — so hair-front points (high Z) don't bleed back
-        # to the same Z as cheek/forehead-front points, which would
-        # smear the side profile into a flat slab. Direction is
-        # invert_depth-aware: with invert_depth=True (default,
-        # "closer = higher Z"), the tail goes to lower Z.
-        back_dir = -1.0 if params.invert_depth else 1.0
-        z_offset = back_dir * np.abs(rng.standard_normal(xs.size)) * vol_thickness_mm
-        z_mm = z_surface + z_offset
-        # Clamp to the engravable interior so the tail can't poke a
-        # point outside the crystal.
-        z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
+            # Z determined by the layer index — interpolate between front and
+            # back of the carving range. Small uniform jitter within the
+            # layer's slab so points don't sit on a hard plane.
+            if layers > 1:
+                t = layer_idx / (layers - 1)
+            else:
+                t = 0.5
+            layer_z = layer_z_top + (layer_z_bottom - layer_z_top) * t
+            z_jitter = (rng.random(xs.size) - 0.5) * layer_slab_mm
+            z_mm = layer_z + z_jitter
+            z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
 
-        inten = intensity_map[ys, xs]
+            inten = intensity_map[ys, xs]
+            pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
+            all_points.append(pts)
 
-        pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
-        all_points.append(pts)
+    else:
+        # ---- Shell mode (depth-map-derived surface + half-normal back tail) ----
+        for layer_idx in range(layers):
+            layer_p = density * params.base_density
+            # Each additional layer is slightly less dense, roughly modeling
+            # the taper of the volumetric shell around the main depth surface.
+            # `layer_falloff` is the *total* drop from layer 0 to layer N-1:
+            # e.g. 0.2 means the last layer still fires at 80% of the first.
+            falloff = (
+                1.0 if layers == 1
+                else 1.0 - params.layer_falloff * (layer_idx / (layers - 1))
+            )
+            layer_p = layer_p * falloff * (params.max_points_per_pixel / layers)
+            layer_p = np.clip(layer_p, 0.0, 1.0)
+
+            mask = rng.random((h, w)) < layer_p
+            ys, xs = np.nonzero(mask)
+            print(f"[pointcloud]   layer {layer_idx}: "
+                  f"p_mean={float(layer_p.mean()):.3f}, "
+                  f"p_max={float(layer_p.max()):.3f}, "
+                  f"emitted={int(xs.size)}")
+            if xs.size == 0:
+                continue
+
+            jitter_x = (rng.random(xs.size) - 0.5) * params.xy_jitter
+            jitter_y = (rng.random(ys.size) - 0.5) * params.xy_jitter
+            x_mm = origin_x + (xs + 0.5 + jitter_x) * px_mm
+            y_mm = origin_y + ((h - 1 - ys) + 0.5 + jitter_y) * px_mm
+
+            d = depth_norm[ys, xs]
+            z_surface = z_base + d * inner_z * params.z_scale
+            back_dir = -1.0 if params.invert_depth else 1.0
+            z_offset = back_dir * np.abs(rng.standard_normal(xs.size)) * vol_thickness_mm
+            z_mm = z_surface + z_offset
+            z_mm = np.clip(z_mm, params.margin_z, params.size_z - params.margin_z)
+
+            inten = intensity_map[ys, xs]
+            pts = np.stack([x_mm, y_mm, z_mm, inten], axis=1).astype(np.float32)
+            all_points.append(pts)
 
     if not all_points:
         return np.zeros((0, 4), dtype=np.float32)
